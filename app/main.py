@@ -1,9 +1,11 @@
 import hmac
 import os
+import re
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse
+import httpx
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
@@ -24,7 +26,9 @@ from .engine import run_task
 from .agents import AGENTS
 
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
-app = FastAPI(title="MultiAgent AI System", version="0.5.0")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
+GITHUB_API = "https://api.github.com"
+app = FastAPI(title="MultiAgent AI System", version="0.6.0")
 
 
 @app.on_event("startup")
@@ -47,6 +51,13 @@ class ChatRequest(BaseModel):
 
 class ClarificationRequest(BaseModel):
     response: str = Field(min_length=1, max_length=12000)
+
+
+class GitHubDispatchRequest(BaseModel):
+    repository: str = Field(min_length=3, max_length=200)
+    workflow: str = Field(min_length=1, max_length=200)
+    ref: str = Field(default="main", min_length=1, max_length=200)
+    inputs: dict[str, str] = Field(default_factory=dict)
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])
@@ -114,6 +125,126 @@ async def retry_task(task_id: int, background_tasks: BackgroundTasks, _: bool = 
     add_message(task_id, "system", "Retry started by the dashboard.")
     background_tasks.add_task(run_task, task_id, task["user_message"])
     return {"task_id": task_id, "status": "running"}
+
+
+def github_headers():
+    if not GITHUB_TOKEN:
+        raise HTTPException(status_code=503, detail="GitHub plugin is not connected. Add GITHUB_TOKEN in the Render service Environment settings.")
+    return {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def validate_github_repository(repository: str):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise HTTPException(status_code=400, detail="Repository must use owner/repository format.")
+
+
+async def github_api(method: str, path: str, *, params=None, payload=None, follow_redirects=True):
+    headers = github_headers()
+    try:
+        async with httpx.AsyncClient(timeout=35, follow_redirects=follow_redirects) as client:
+            response = await client.request(method, f"{GITHUB_API}{path}", headers=headers, params=params, json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub connection failed: {type(exc).__name__}.") from exc
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("message", "GitHub API request failed.")
+        except ValueError:
+            detail = "GitHub API request failed."
+        raise HTTPException(status_code=response.status_code, detail=f"GitHub: {detail}")
+    return response
+
+
+@app.get("/api/plugins")
+def plugins(_: bool = Depends(require_auth)):
+    return {
+        "plugins": [
+            {
+                "id": "github",
+                "name": "GitHub",
+                "description": "Browse repositories, trigger GitHub Actions workflows, monitor builds, and retrieve build artifacts.",
+                "connected": bool(GITHUB_TOKEN),
+                "capabilities": ["repositories", "workflows", "workflow_dispatch", "build_status", "artifacts"],
+            }
+        ]
+    }
+
+
+@app.get("/api/plugins/github/workflows")
+async def github_workflows(repository: str, _: bool = Depends(require_auth)):
+    validate_github_repository(repository)
+    response = await github_api("GET", f"/repos/{repository}/actions/workflows", params={"per_page": 100})
+    data = response.json()
+    return {
+        "workflows": [
+            {"id": item["id"], "name": item.get("name") or item.get("path"), "path": item.get("path"), "state": item.get("state")}
+            for item in data.get("workflows", [])
+        ]
+    }
+
+
+@app.post("/api/plugins/github/dispatch", status_code=202)
+async def github_dispatch(body: GitHubDispatchRequest, _: bool = Depends(require_auth)):
+    validate_github_repository(body.repository)
+    if not re.fullmatch(r"(?:[0-9]+|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.ya?ml)", body.workflow):
+        raise HTTPException(status_code=400, detail="Choose a workflow ID or a workflow .yml/.yaml path.")
+    if not re.fullmatch(r"[A-Za-z0-9_./-]+", body.ref) or ".." in body.ref:
+        raise HTTPException(status_code=400, detail="Invalid Git ref.")
+    if len(body.inputs) > 20 or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", key) or len(value) > 1000 for key, value in body.inputs.items()):
+        raise HTTPException(status_code=400, detail="Workflow inputs are invalid or too large.")
+    response = await github_api(
+        "POST",
+        f"/repos/{body.repository}/actions/workflows/{body.workflow}/dispatches",
+        payload={"ref": body.ref, "inputs": body.inputs},
+    )
+    return {"accepted": response.status_code == 204, "repository": body.repository, "workflow": body.workflow, "ref": body.ref, "message": "GitHub Actions workflow dispatch accepted."}
+
+
+@app.get("/api/plugins/github/runs")
+async def github_runs(repository: str, branch: str | None = None, _: bool = Depends(require_auth)):
+    validate_github_repository(repository)
+    params = {"per_page": 10}
+    if branch:
+        params["branch"] = branch
+    response = await github_api("GET", f"/repos/{repository}/actions/runs", params=params)
+    return {
+        "runs": [
+            {
+                "id": item["id"], "name": item.get("name"), "run_number": item.get("run_number"),
+                "status": item.get("status"), "conclusion": item.get("conclusion"),
+                "head_branch": item.get("head_branch"), "created_at": item.get("created_at"),
+                "html_url": item.get("html_url"),
+            }
+            for item in response.json().get("workflow_runs", [])
+        ]
+    }
+
+
+@app.get("/api/plugins/github/runs/{run_id}/artifacts")
+async def github_artifacts(run_id: int, repository: str, _: bool = Depends(require_auth)):
+    validate_github_repository(repository)
+    response = await github_api("GET", f"/repos/{repository}/actions/runs/{run_id}/artifacts")
+    return {
+        "artifacts": [
+            {"id": item["id"], "name": item.get("name"), "size_in_bytes": item.get("size_in_bytes"), "expired": item.get("expired")}
+            for item in response.json().get("artifacts", [])
+        ]
+    }
+
+
+@app.get("/api/plugins/github/artifacts/{artifact_id}/download")
+async def github_artifact_download(artifact_id: int, repository: str, _: bool = Depends(require_auth)):
+    validate_github_repository(repository)
+    response = await github_api(
+        "GET", f"/repos/{repository}/actions/artifacts/{artifact_id}/zip", follow_redirects=False
+    )
+    location = response.headers.get("location")
+    if not location:
+        raise HTTPException(status_code=502, detail="GitHub did not provide an artifact download URL.")
+    return RedirectResponse(location, status_code=302)
 
 
 @app.get("/", response_class=HTMLResponse)
