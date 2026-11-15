@@ -64,12 +64,18 @@ async def run_task(task_id: int, goal: str) -> dict:
         add_message(task_id, "orchestrator", planner)
 
         specialist_keys = choose_agents(goal)
-        active = list(specialist_keys)
+        # Publish the selected team before execution so the dashboard can show
+        # every assigned specialist as IN QUEUE until it actually starts.
+        add_message(task_id, "system", "AGENTS_SELECTED:" + ",".join(specialist_keys + ["reviewer"]))
+        active = []
         set_active_agents(task_id, active)
         active_lock = asyncio.Lock()
 
         async def run_specialist(key: str):
             agent = AGENTS[key]
+            async with active_lock:
+                active.append(key)
+                set_active_agents(task_id, active)
             prompt = (
                 f"User goal:\n{goal}\n\nOrchestrator plan:\n{planner}\n\n"
                 f"Collaborating team: {', '.join(AGENTS[k].name for k in specialist_keys)} plus QA Reviewer. "
