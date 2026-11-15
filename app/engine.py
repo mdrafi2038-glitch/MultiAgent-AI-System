@@ -102,15 +102,10 @@ async def clarification_check(goal: str) -> dict:
         "For app/software requests, consider purpose, target platform, core features, design, "
         "and expected deliverables, but do not ask for details already stated or safe to assume. "
         "Ask at most 5 concise, specific questions in one grouped message. "
-        "When clarification is needed, questions MUST be a JSON array of objects; each object has "
-        "question (string), options (array of 3-4 short selectable strings), multiple (boolean), "
-        "and allow_other (boolean). Prefer single-choice unless multiple selections are genuinely useful. "
-        "Include practical options based on the user's task and language. "
-        "If free text is essential, include an option such as 'নিজে লিখব' and set allow_other true. "
         "If the request is sufficiently clear, return no questions. "
         "Match the user's language (Bengali/Banglish/English). "
-        "Return ONLY valid JSON, for example: "
-        '{"needs_clarification":true,"questions":[{"question":"কোন প্ল্যাটফর্ম?","options":["Android","Website","দুটোই"],"multiple":false,"allow_other":true}],"reason":"Need platform"}.',
+        "Return ONLY valid JSON with a boolean needs_clarification field, for example: "
+        '{"needs_clarification":false,"questions":"","reason":"The request is clear enough"}.',
         goal,
     )
     try:
