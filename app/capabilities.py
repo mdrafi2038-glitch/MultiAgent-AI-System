@@ -123,8 +123,11 @@ async def render_service(_: bool = Depends(require_auth)):
                 headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
         response.raise_for_status()
         data = response.json()
+        data = data.get("service", data) if isinstance(data, dict) else {}
+        details = data.get("serviceDetails") or {}
         return {"id": data.get("id"), "name": data.get("name"), "type": data.get("type"),
-                "serviceDetails": data.get("serviceDetails"), "suspended": data.get("suspended")}
+                "url": details.get("url"), "plan": details.get("plan"), "region": details.get("region"),
+                "runtime": details.get("runtime"), "suspended": data.get("suspended")}
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"Render service lookup failed: {type(exc).__name__}.") from exc
 
@@ -140,6 +143,7 @@ async def render_deploys(_: bool = Depends(require_auth)):
                 headers={"Authorization": f"Bearer {key}", "Accept": "application/json"}, params={"limit": 10})
         response.raise_for_status()
         rows = response.json()
+        rows = [row.get("deploy", row) if isinstance(row, dict) else row for row in rows]
         return {"deploys": [{"id": row.get("id"), "status": row.get("status"),
             "createdAt": row.get("createdAt"), "finishedAt": row.get("finishedAt"),
             "commit": row.get("commit")} for row in rows]}
@@ -165,6 +169,7 @@ async def render_deploy(body: RenderDeployRequest, _: bool = Depends(require_aut
                 json={"clearCache": "do_not_clear"})
         response.raise_for_status()
         data = response.json()
+        data = data.get("deploy", data) if isinstance(data, dict) else {}
         return {"accepted": True, "deploy_id": data.get("id"), "status": data.get("status"),
                 "message": "Render deployment request accepted after explicit approval."}
     except httpx.HTTPError as exc:
