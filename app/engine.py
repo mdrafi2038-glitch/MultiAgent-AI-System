@@ -322,7 +322,12 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
             return github_result
         if not skip_clarification:
             report_progress(task_id, "Checking whether more details are needed", "orchestrator")
-            check = await asyncio.wait_for(clarification_check(goal), timeout=MODEL_REQUEST_TIMEOUT + 5)
+            try:
+                check = await asyncio.wait_for(clarification_check(goal), timeout=MODEL_REQUEST_TIMEOUT + 5)
+            except Exception as exc:
+                report_progress(task_id, "Clarification check failed · continuing with safe assumptions", "supervisor")
+                add_message(task_id, "supervisor", f"RECOVERY: Clarification preflight failed; continuing without blocking the task. {type(exc).__name__}: {str(exc)[:400]}")
+                check = {"needs_clarification": False, "questions": ""}
             if check["needs_clarification"] and check["questions"]:
                 pause_task_for_input(task_id)
                 add_message(task_id, "orchestrator", "CLARIFICATION_NEEDED:\\n" + check["questions"])
@@ -341,7 +346,8 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
             raise RuntimeError("Supervisor generated an invalid task dependency graph.")
         add_message(task_id, "supervisor", "SUPERVISOR_PLAN:" + json.dumps(supervisor_plan, ensure_ascii=False))
         report_progress(task_id, "Orchestrator is preparing the execution plan", "orchestrator")
-        planner = await ask_model(
+        planner = await ask_model_with_recovery(
+            task_id, "orchestrator", "Orchestrator planning",
             "You are the Main Orchestrator working under the Supervisor Agent. "
             "Return a concise execution plan as JSON with summary, steps, and specialists. "
             "Respect the supplied dependency graph and approval gates. "
