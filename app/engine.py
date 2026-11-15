@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from .agents import AGENTS, choose_agents
-from .storage import add_message, finish_task
+from .storage import add_message, finish_task, set_active_agent
 
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY", "")
@@ -26,16 +26,19 @@ async def ask_model(system_prompt: str, user_prompt: str) -> str:
 
 async def run_task(task_id: int, goal: str) -> dict:
     try:
+        set_active_agent(task_id, "orchestrator")
         planner = await ask_model("You are the Main Orchestrator. Return a concise execution plan as JSON with summary, steps, and specialists. Do not use tools or claim external actions.", goal)
         add_message(task_id, "orchestrator", planner)
         specialist_keys = choose_agents(goal)
         outputs = []
         for key in specialist_keys:
+            set_active_agent(task_id, key)
             agent = AGENTS[key]
             prompt = f"User goal:\n{goal}\n\nOrchestrator plan:\n{planner}"
             output = await ask_model(f"You are {agent.name}, specialist in {agent.role}. {agent.instruction} You are text-only: do not execute external actions, access accounts, or claim to have done so. Ask for approval before proposing consequential external actions.", prompt)
             add_message(task_id, key, output)
             outputs.append(f"### {agent.name}\n{output}")
+        set_active_agent(task_id, "reviewer")
         review_input = "\n\n".join(outputs)
         final = await ask_model("You are the QA Reviewer and final response editor. Combine specialist work into one accurate, useful answer. Correct contradictions, flag uncertainty, and never claim an external action was completed.", f"Original request:\n{goal}\n\nSpecialist work:\n{review_input}")
         add_message(task_id, "reviewer", final)
