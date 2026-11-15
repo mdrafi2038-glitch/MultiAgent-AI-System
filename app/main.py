@@ -137,21 +137,54 @@ async def chat_mode(body: ChatModeRequest, _: bool = Depends(require_auth)):
             "When the user wants an app, website, or software built, do NOT start agents or claim work has begun. "
             "Instead gather requirements using type=questions and a questions array. Each question has question, options (3-4 choices), multiple (boolean), allow_other (boolean). "
             "Ask only useful unanswered questions and tailor them to the product, including platform, purpose, features, users, data/storage, design, login and delivery where relevant. "
-            "When enough details are known, use type=ready and include a clear summary field. "
+            "IMPORTANT: Treat the user's submitted card answers and additional notes as actual requirements. Re-evaluate the FULL conversation after every answer submission. "
+            "Do not repeat questions that have already been answered. If the core purpose, target platform, main features, and essential preferences are clear enough to begin, you MUST return type=ready now with a useful summary; do not keep asking optional questions. "
+            "Use type=questions only when a genuinely essential decision is still missing. A ready response must include a non-empty summary field. "
             "Never start work yourself. Only the separate Start Building confirmation can launch agents. Match the user's language and preserve context.",
             context,
         )
     except Exception as exc:
         add_conversation_message(conversation_id, "assistant", "I couldn't get a response from the AI provider: " + str(exc)[:500])
         raise HTTPException(status_code=502, detail="Chat response failed: " + str(exc)[:300])
-    try:
-        payload = json.loads(answer)
-        if not isinstance(payload, dict) or payload.get("type") not in {"chat", "questions", "ready"}:
+    def parse_chat_json(raw: str):
+        candidate = raw.strip()
+        candidate = re.sub(r"^\s*```(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
+        candidate = re.sub(r"\s*```\s*$", "", candidate)
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, TypeError):
+            first, last = candidate.find("{"), candidate.rfind("}")
+            if first < 0 or last <= first:
+                raise ValueError("No JSON object in model response")
+            parsed = json.loads(candidate[first:last + 1])
+        if not isinstance(parsed, dict) or parsed.get("type") not in {"chat", "questions", "ready"}:
             raise ValueError("Unexpected response format")
-        if payload.get("type") == "questions":
-            qs = payload.get("questions")
-            if not isinstance(qs, list):
-                raise ValueError("Questions missing")
+        return parsed
+
+    try:
+        payload = parse_chat_json(answer)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        # Some providers wrap valid JSON in prose or ignore the format instruction.
+        # Ask once for a strict structured repair instead of silently losing the card state.
+        try:
+            repaired = await ask_model(
+                "Convert the supplied assistant response into ONLY valid JSON. "
+                "Use exactly one of these shapes: "
+                '{"type":"chat","message":"..."}, '
+                '{"type":"questions","message":"...","questions":[{"question":"...","options":["...","...","..."],"multiple":false,"allow_other":true}]}, '
+                'or {"type":"ready","message":"...","summary":"..."}. '
+                "Preserve its meaning and language. If it is a completed app plan, choose ready; "
+                "if it asks for essential missing details, choose questions. No markdown fences or extra prose.",
+                "Conversation context:\n" + context + "\n\nUnstructured response to convert:\n" + answer,
+            )
+            payload = parse_chat_json(repaired)
+        except Exception:
+            payload = {"type": "chat", "message": answer}
+    if payload.get("type") == "questions":
+        qs = payload.get("questions")
+        if not isinstance(qs, list):
+            payload = {"type": "chat", "message": str(payload.get("message") or "দুঃখিত, প্রশ্নগুলো তৈরি করা যায়নি।")}
+        else:
             payload["questions"] = [
                 {"question": str(q.get("question", "A detail"))[:500],
                  "options": [str(x)[:160] for x in q.get("options", [])[:4]],
@@ -159,9 +192,9 @@ async def chat_mode(body: ChatModeRequest, _: bool = Depends(require_auth)):
                  "allow_other": bool(q.get("allow_other", True))}
                 for q in qs[:6] if isinstance(q, dict)
             ]
-        answer = json.dumps(payload, ensure_ascii=False)
-    except (ValueError, TypeError, json.JSONDecodeError):
-        answer = json.dumps({"type": "chat", "message": answer}, ensure_ascii=False)
+    if payload.get("type") == "ready" and not str(payload.get("summary", "")).strip():
+        payload["summary"] = str(payload.get("message") or "Requirements gathered from this conversation.")
+    answer = json.dumps(payload, ensure_ascii=False)
     add_conversation_message(conversation_id, "assistant", answer)
     return {"conversation_id": conversation_id, "answer": answer}
 
