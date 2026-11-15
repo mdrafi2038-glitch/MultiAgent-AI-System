@@ -21,3 +21,25 @@ services:
         sync: false
       - key: AI_MODEL
         value: openrouter/free
+      - key: RENDER_SERVICE_ID
+        value: srv-dbsk8auk1f9s739hh760
+      - key: RENDER_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: IMAGE_API_KEY
+        sync: false
+      - key: IMAGE_MODEL
+        sync: false
+      - key: IMAGE_API_BASE_URL
+        sync: false
+      - key: VIDEO_API_URL
+        sync: false
+      - key: VIDEO_API_KEY
+        sync: false
+      - key: BROWSERLESS_URL
+        sync: false
+      - key: BROWSERLESS_TOKEN
+        sync: false
+      - key: BROWSER_ALLOWED_HOSTS
+        sync: false
