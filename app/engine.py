@@ -301,10 +301,10 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                         active.remove(key)
                     set_active_agents(task_id, active)
 
-        # Run specialists in strict queue order: only one agent is WORKING at a time.
-        results = []
-        for key in specialist_keys:
-            results.append(await run_specialist(key))
+        # Hybrid execution: independent specialist contributions run concurrently.
+        # The coordinator handoff and QA review remain sequential after all specialists finish.
+        # This gives parallel speed without skipping dependency integration or final review.
+        results = await asyncio.gather(*(run_specialist(key) for key in specialist_keys))
         successful = [item for item in results if item["output"]]
         if not successful:
             raise RuntimeError("All specialist agents failed after automatic retries.")
