@@ -24,13 +24,15 @@ from .storage import (
 )
 from .engine import run_task
 from .agents import AGENTS
-from .plugin_hub import router as custom_plugins_router\nfrom .capabilities import router as capabilities_router
+from .plugin_hub import router as custom_plugins_router
+from .capabilities import router as capabilities_router
 
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 GITHUB_API = "https://api.github.com"
 app = FastAPI(title="MultiAgent AI System", version="0.7.0")
-app.include_router(custom_plugins_router)\napp.include_router(capabilities_router)
+app.include_router(custom_plugins_router)
+app.include_router(capabilities_router)
 
 
 @app.on_event("startup")
