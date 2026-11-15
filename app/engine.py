@@ -1,51 +1,143 @@
+import asyncio
 import os
+
 import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 from .agents import AGENTS, choose_agents
-from .storage import add_message, finish_task, set_active_agent
+from .storage import add_message, finish_task, set_active_agent, set_active_agents
 
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY", "")
 MODEL = os.getenv("AI_MODEL", "openrouter/auto")
+MAX_MODEL_ATTEMPTS = 3
+
 
 async def ask_model(system_prompt: str, user_prompt: str) -> str:
     if not API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not configured. Add a compatible provider key in hosting environment settings.")
+        raise RuntimeError("OPENROUTER_API_KEY (or OPENAI_API_KEY) is not configured.")
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
     if "openrouter.ai" in BASE_URL:
         headers["HTTP-Referer"] = os.getenv("APP_PUBLIC_URL", "https://github.com/mdrafi2038-glitch/MultiAgent-AI-System")
         headers["X-Title"] = "MultiAgent AI System"
-    payload = {"model": MODEL, "temperature": 0.3, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]}
-    async with httpx.AsyncClient(timeout=90) as client:
-        response = await client.post(f"{BASE_URL}/chat/completions", headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-    return data["choices"][0]["message"]["content"].strip()
+    payload = {
+        "model": MODEL,
+        "temperature": 0.3,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    last_error = None
+    for attempt in range(MAX_MODEL_ATTEMPTS):
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                response = await client.post(f"{BASE_URL}/chat/completions", headers=headers, json=payload)
+            if response.status_code in (408, 425, 429) or response.status_code >= 500:
+                response.raise_for_status()
+            response.raise_for_status()
+            data = response.json()
+            content = data.get("choices", [{}])[0].get("message", {}).get("content")
+            if not isinstance(content, str) or not content.strip():
+                raise RuntimeError("AI provider returned an empty or unsupported response.")
+            return content.strip()
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
+            last_error = exc
+            retryable = not isinstance(exc, httpx.HTTPStatusError) or (
+                exc.response.status_code in (408, 425, 429) or exc.response.status_code >= 500
+            )
+            if not retryable or attempt == MAX_MODEL_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(min(2 ** attempt, 4))
+    raise RuntimeError(f"AI provider request failed after retries: {last_error}")
+
 
 async def run_task(task_id: int, goal: str) -> dict:
     try:
         set_active_agent(task_id, "orchestrator")
-        planner = await ask_model("You are the Main Orchestrator. Return a concise execution plan as JSON with summary, steps, and specialists. Do not use tools or claim external actions.", goal)
+        planner = await ask_model(
+            "You are the Main Orchestrator. Return a concise execution plan as JSON with summary, steps, and specialists. "
+            "Delegate only text work. Do not use tools or claim external actions.",
+            goal,
+        )
         add_message(task_id, "orchestrator", planner)
+
         specialist_keys = choose_agents(goal)
-        outputs = []
-        for key in specialist_keys:
-            set_active_agent(task_id, key)
+        active = list(specialist_keys)
+        set_active_agents(task_id, active)
+        active_lock = asyncio.Lock()
+
+        async def run_specialist(key: str):
             agent = AGENTS[key]
-            prompt = f"User goal:\n{goal}\n\nOrchestrator plan:\n{planner}"
-            output = await ask_model(f"You are {agent.name}, specialist in {agent.role}. {agent.instruction} You are text-only: do not execute external actions, access accounts, or claim to have done so. Ask for approval before proposing consequential external actions.", prompt)
-            add_message(task_id, key, output)
-            outputs.append(f"### {agent.name}\n{output}")
+            prompt = (
+                f"User goal:\n{goal}\n\nOrchestrator plan:\n{planner}\n\n"
+                f"Collaborating team: {', '.join(AGENTS[k].name for k in specialist_keys)} plus QA Reviewer. "
+                "Produce a useful specialist contribution that can be shared with the other agents. "
+                "Do not claim external actions."
+            )
+            try:
+                output = await ask_model(
+                    f"You are {agent.name}, specialist in {agent.role}. {agent.instruction} "
+                    "You are text-only: do not execute external actions, access accounts, or claim to have done so.",
+                    prompt,
+                )
+                add_message(task_id, key, output)
+                return {"key": key, "output": output, "error": None}
+            except Exception as exc:
+                note = f"{agent.name} could not complete its part after automatic retries: {type(exc).__name__}: {exc}"
+                add_message(task_id, key, note)
+                return {"key": key, "output": None, "error": note}
+            finally:
+                async with active_lock:
+                    if key in active:
+                        active.remove(key)
+                    set_active_agents(task_id, active)
+
+        results = await asyncio.gather(*(run_specialist(key) for key in specialist_keys))
+        successful = [item for item in results if item["output"]]
+        if not successful:
+            raise RuntimeError("All specialist agents failed after automatic retries.")
+
+        # Shared handoff gives each specialist's findings to the team coordinator and QA reviewer.
+        team_context = "\n\n".join(
+            f"### {AGENTS[item['key']].name}\n{item['output']}" for item in successful
+        )
+        handoff = ""
+        if len(successful) > 1:
+            try:
+                set_active_agent(task_id, "orchestrator")
+                handoff = await ask_model(
+                    "You are the Agent Collaboration Coordinator. Compare all specialist contributions. "
+                    "Create a concise shared handoff identifying useful cross-agent findings, dependencies, "
+                    "contradictions, and gaps. Do not write the final user answer.",
+                    f"Original goal:\n{goal}\n\nSpecialist contributions:\n{team_context}",
+                )
+                add_message(task_id, "orchestrator", "Agent-to-agent collaboration handoff:\n" + handoff)
+            except Exception as exc:
+                add_message(task_id, "system", f"Collaboration handoff skipped after retries: {type(exc).__name__}: {exc}")
+
         set_active_agent(task_id, "reviewer")
-        review_input = "\n\n".join(outputs)
-        final = await ask_model("You are the QA Reviewer and final response editor. Combine specialist work into one accurate, useful answer. Correct contradictions, flag uncertainty, and never claim an external action was completed.", f"Original request:\n{goal}\n\nSpecialist work:\n{review_input}")
+        final = await ask_model(
+            "You are the QA Reviewer and final response editor. Combine specialist work into one accurate, useful answer. "
+            "Use the cross-agent handoff to resolve dependencies and contradictions. Correct unsupported claims, "
+            "flag uncertainty, and never claim an external action was completed.",
+            f"Original request:\n{goal}\n\nSpecialist work:\n{team_context}\n\n"
+            f"Cross-agent handoff:\n{handoff or 'No separate handoff was available.'}",
+        )
         add_message(task_id, "reviewer", final)
         finish_task(task_id, "completed", final)
-        return {"task_id": task_id, "status": "completed", "result": final, "agents": ["orchestrator"] + specialist_keys + ["reviewer"]}
+        return {
+            "task_id": task_id,
+            "status": "completed",
+            "result": final,
+            "agents": ["orchestrator"] + specialist_keys + ["reviewer"],
+        }
     except Exception as exc:
         message = f"Task failed: {type(exc).__name__}: {exc}"
-        add_message(task_id, "system", message)
-        finish_task(task_id, "failed", message)
+        try:
+            add_message(task_id, "system", message)
+            finish_task(task_id, "failed", message)
+        except Exception:
+            pass
         return {"task_id": task_id, "status": "failed", "error": message}
