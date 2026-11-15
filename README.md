@@ -14,6 +14,7 @@ A separate multi-agent assistant with a Main Orchestrator, specialist agents, ta
 - SQLite for local development; PostgreSQL/Supabase for durable hosted history.
 - Responsive web dashboard and JSON API.
 - OpenAI-compatible model endpoint (OpenRouter by default).
+- GitHub plugin: list repository workflows, trigger explicitly approved `workflow_dispatch` runs, monitor build status, and download workflow artifacts.
 - Password-protected dashboard and task APIs; fails closed until APP_PASSWORD is configured.
 
 ## Database configuration
@@ -30,6 +31,7 @@ A separate multi-agent assistant with a Main Orchestrator, specialist agents, ta
 - `APP_PASSWORD` for dashboard/API authentication
 - `DATABASE_URL` optional PostgreSQL connection string
 - `APP_DB_PATH` SQLite fallback path (default `./data/multiagent.db`)
+- `GITHUB_TOKEN` optional GitHub fine-grained token with Contents: read and Actions: read/write on the target repositories
 
 Never commit API keys, passwords, or database connection strings.
 
@@ -42,5 +44,12 @@ Never commit API keys, passwords, or database connection strings.
 6. Start: `uvicorn app.main:app --reload`
 7. Open `http://127.0.0.1:8000`
 
+## GitHub Plugin setup
+1. Create a fine-grained GitHub token limited to the repositories you want the system to access.
+2. Grant repository Contents: Read and Actions: Read and write permissions.
+3. Add it as `GITHUB_TOKEN` in the Render service Environment settings; never commit it or paste it into chat.
+4. In the dashboard open Plugins → GitHub, enter `owner/repository`, load workflows, choose one with `workflow_dispatch`, and start the build.
+5. The target Android repository must already contain an Android build workflow that uploads the APK as a GitHub Actions artifact. The plugin can trigger and retrieve artifacts; it does not invent or add an Android Gradle workflow to an unrelated repository.
+
 ## Safety and current scope
-This version is text-only. Agents can plan, analyze, and draft work but do not control a phone/browser, publish content, access private accounts, spend money, or execute external actions. Add explicit user approval and narrowly scoped integrations before enabling side effects.
+GitHub workflows are external actions and only start after the user explicitly presses Start GitHub build. The plugin is restricted to GitHub's API and does not run arbitrary shell commands. Other agent work remains text-based unless a dedicated integration is connected.
