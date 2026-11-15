@@ -134,11 +134,10 @@ async def chat_mode(body: ChatModeRequest, _: bool = Depends(require_auth)):
             "You are Chat mode, a conversational product-planning assistant. Reply ONLY as valid JSON with keys type and message. "
             "type must be chat, questions, or ready. For normal conversation use type=chat. "
             "When the user wants an app, website, or software built, do NOT start agents or claim work has begun. "
-            "Instead gather requirements conversationally using type=questions and a questions array. Each question has question, options (3-4 choices), multiple (boolean), allow_other (boolean). "
-            "Ask only useful unanswered questions, grouped in one round when practical. Tailor questions to the requested product (purpose, platform, users, features, data/storage, design, login, integrations, delivery). "
-            "When enough details are known, use type=ready and include a clear summary field covering the agreed requirements. "
-            "Never start work yourself. Only the separate Start Building confirmation can launch agents. "
-            "Match the user's language. Keep all prior answers and context from the transcript.",
+            "Instead gather requirements using type=questions and a questions array. Each question has question, options (3-4 choices), multiple (boolean), allow_other (boolean). "
+            "Ask only useful unanswered questions and tailor them to the product, including platform, purpose, features, users, data/storage, design, login and delivery where relevant. "
+            "When enough details are known, use type=ready and include a clear summary field. "
+            "Never start work yourself. Only the separate Start Building confirmation can launch agents. Match the user's language and preserve context.",
             context,
         )
     except Exception as exc:
@@ -153,12 +152,10 @@ async def chat_mode(body: ChatModeRequest, _: bool = Depends(require_auth)):
             if not isinstance(qs, list):
                 raise ValueError("Questions missing")
             payload["questions"] = [
-                {
-                    "question": str(q.get("question", "A detail"))[:500],
-                    "options": [str(x)[:160] for x in q.get("options", [])[:4]],
-                    "multiple": bool(q.get("multiple", False)),
-                    "allow_other": bool(q.get("allow_other", True)),
-                }
+                {"question": str(q.get("question", "A detail"))[:500],
+                 "options": [str(x)[:160] for x in q.get("options", [])[:4]],
+                 "multiple": bool(q.get("multiple", False)),
+                 "allow_other": bool(q.get("allow_other", True))}
                 for q in qs[:6] if isinstance(q, dict)
             ]
         answer = json.dumps(payload, ensure_ascii=False)
@@ -174,21 +171,14 @@ class StartBuildRequest(BaseModel):
 
 @app.post("/api/chat-mode/start-build", status_code=202)
 async def start_chat_build(body: StartBuildRequest, background_tasks: BackgroundTasks, _: bool = Depends(require_auth)):
-    found = get_conversation(body.conversation_id)
-    if not found:
+    if not get_conversation(body.conversation_id):
         raise HTTPException(status_code=404, detail="Conversation not found")
     history = conversation_messages(body.conversation_id)
     if not history:
         raise HTTPException(status_code=400, detail="This chat has no requirements yet.")
-    transcript = "\\n".join(
-        ("USER: " if item["role"] == "user" else "ASSISTANT: ") + item["content"]
-        for item in history
-    )
-    task_message = (
-        "Build the app/website described in this approved Chat-mode planning conversation. "
-        "Treat the user's answers as requirements. Resolve any remaining minor ambiguity with sensible defaults. "
-        "Do not ask the user to repeat answered questions.\n\n" + transcript
-    )
+    transcript = "\\n".join(("USER: " if item["role"] == "user" else "ASSISTANT: ") + item["content"] for item in history)
+    task_message = ("Build the app/website described in this approved Chat-mode planning conversation. "
+                    "Treat the user's answers as requirements, use sensible defaults for minor gaps, and do not ask answered questions again.\\n\\n" + transcript)
     task_id = create_task(task_message)
     background_tasks.add_task(run_task, task_id, task_message)
     add_conversation_message(body.conversation_id, "assistant", "BUILD_STARTED: Agent task #" + str(task_id) + " has started.")
