@@ -65,8 +65,8 @@ async def clarification_check(goal: str) -> dict:
         "Ask at most 5 concise, specific questions in one grouped message. "
         "If the request is sufficiently clear, return no questions. "
         "Match the user's language (Bengali/Banglish/English). "
-        "Return ONLY valid JSON: "
-        '{"needs_clarification":true|false,"questions":"one user-facing message or empty string","reason":"brief reason"}.',
+        "Return ONLY valid JSON with a boolean needs_clarification field, for example: "
+        '{"needs_clarification":false,"questions":"","reason":"The request is clear enough"}.',
         goal,
     )
     try:
