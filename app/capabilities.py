@@ -169,7 +169,8 @@ async def render_deploy(body: RenderDeployRequest, _: bool = Depends(require_aut
                 "message": "Render deployment request accepted after explicit approval."}
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"Render deployment request failed: {type(exc).__name__}.") from exc
-\n@router.post("/web-search")
+
+@router.post("/web-search")
 async def web_search(body: SearchRequest, _: bool = Depends(require_auth)):
     key = os.getenv("TAVILY_API_KEY", "").strip()
     if not key:
