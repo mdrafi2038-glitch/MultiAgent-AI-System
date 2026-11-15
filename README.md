@@ -14,7 +14,10 @@ A separate multi-agent assistant with a Main Orchestrator, specialist agents, ta
 - SQLite for local development; PostgreSQL/Supabase for durable hosted history.
 - Responsive web dashboard and JSON API.
 - OpenAI-compatible model endpoint (OpenRouter by default).
-- GitHub plugin: list repository workflows, trigger explicitly approved `workflow_dispatch` runs from the dashboard, monitor build status, and download workflow artifacts.
+- Plugin hub: built-in GitHub integration plus user-defined HTTPS API plugins for services that expose an API.
+- Custom API plugins support named GET/POST/PUT/PATCH/DELETE actions, optional bearer credentials sourced only from hosting environment variables, persistent plugin definitions, and explicit per-call approval for all write actions.
+- Custom plugin URLs are HTTPS-only; local/private network targets and redirects are blocked. Credentials are never stored in the plugin database or exposed in dashboard responses.
+- Custom API actions are configured as an explicit allowlist. The current release does not automatically import arbitrary OpenAPI documents or automate websites that have no supported API.
 - The orchestrator can also dispatch an Android/APK workflow when the user explicitly requests an APK build and supplies a GitHub repository; it asks for missing repository/workflow details first.
 - Password-protected dashboard and task APIs; fails closed until APP_PASSWORD is configured.
 
@@ -33,6 +36,7 @@ A separate multi-agent assistant with a Main Orchestrator, specialist agents, ta
 - `DATABASE_URL` optional PostgreSQL connection string
 - `APP_DB_PATH` SQLite fallback path (default `./data/multiagent.db`)
 - `GITHUB_TOKEN` optional GitHub fine-grained token with Contents: read and Actions: read/write on the target repositories
+- Custom plugin credentials: create environment variables using the exact names entered in the plugin setup form (for example `MY_SERVICE_API_TOKEN`); credentials are not entered into chat or saved in the plugin database.
 
 Never commit API keys, passwords, or database connection strings.
 
@@ -54,3 +58,19 @@ Never commit API keys, passwords, or database connection strings.
 
 ## Safety and current scope
 GitHub workflows are external actions and only start after the user explicitly presses Start GitHub build. The plugin is restricted to GitHub's API and does not run arbitrary shell commands. Other agent work remains text-based unless a dedicated integration is connected.
+
+
+## Universal API Plugin Hub
+1. Open Dashboard → Plugins → Universal API Plugin Hub.
+2. Add a plugin ID, display name, HTTPS API base URL, and optional credential environment-variable name.
+3. Define the permitted actions as a JSON array. Each action has a unique `id`, HTTP `method`, relative `path`, and optional `description`. Example:
+   ```json
+   [
+     {"id":"list_items","method":"GET","path":"/v1/items","description":"List items"},
+     {"id":"create_item","method":"POST","path":"/v1/items","description":"Create an item"}
+   ]
+   ```
+4. If authentication is needed, add the named environment variable and its secret value in the Render service Environment settings. The dashboard stores only the variable name, never the secret.
+5. Use the action buttons to call an API. GET requests are read-only; every other method prompts for a separate confirmation before execution.
+
+The connector supports services with compatible HTTPS APIs. It does not guarantee access to every website, does not bypass login/anti-bot controls, and does not yet auto-import OpenAPI specifications or perform browser automation. A website without a supported API needs a separate, explicitly designed integration.
