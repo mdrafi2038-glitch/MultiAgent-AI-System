@@ -44,7 +44,7 @@ def capability_status() -> dict:
         "file_analysis": {"configured": True, "provider": "Built-in text/PDF/DOCX extractor", "required_env": []},
         "browser_automation": {"configured": _configured("BROWSERLESS_URL") and _configured("BROWSERLESS_TOKEN") and _configured("BROWSER_ALLOWED_HOSTS"), "provider": "Browserless-compatible remote browser", "required_env": ["BROWSERLESS_URL", "BROWSERLESS_TOKEN", "BROWSER_ALLOWED_HOSTS"]},
         "github": {"configured": _configured("GITHUB_TOKEN"), "provider": "GitHub API", "required_env": ["GITHUB_TOKEN"]},
-        "render": {"configured": _configured("RENDER_API_KEY"), "provider": "Render API", "required_env": ["RENDER_API_KEY"]},
+        "render": {"configured": _configured("RENDER_API_KEY") and _configured("RENDER_SERVICE_ID"), "provider": "Render API", "required_env": ["RENDER_API_KEY", "RENDER_SERVICE_ID"]},
         "custom_api_plugins": {"configured": True, "provider": "Universal API Plugin Hub", "required_env": []},
     }
 
