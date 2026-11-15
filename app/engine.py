@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 
 import httpx
 from dotenv import load_dotenv
@@ -81,9 +82,117 @@ async def clarification_check(goal: str) -> dict:
         return {"needs_clarification": False, "questions": ""}
 
 
+def _apk_build_requested(goal: str) -> bool:
+    text = goal.lower()
+    return bool(
+        re.search(r"\b(?:build|compile|generate|make)\b.{0,50}\bapk\b|\bapk\b.{0,50}\b(?:build|compile|generate|make)\b", text)
+        or re.search(r"এপিকে.{0,50}(?:বানাও|তৈরি|বিল্ড)|(?:বানাও|তৈরি|বিল্ড).{0,50}এপিকে", text)
+    )
+
+
+def _github_repository_from_text(goal: str) -> str | None:
+    url_match = re.search(r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", goal, re.IGNORECASE)
+    if url_match:
+        return f"{url_match.group(1)}/{url_match.group(2).removesuffix('.git')}"
+    explicit = re.search(r"(?:repo(?:sitory)?\s*[:=]?\s*)([A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100})", goal, re.IGNORECASE)
+    if explicit:
+        return explicit.group(1)
+    return None
+
+
+def _requested_workflow(goal: str) -> str | None:
+    path = re.search(r"(?:\.github/workflows/)?([A-Za-z0-9_.-]+\.ya?ml)", goal, re.IGNORECASE)
+    return path.group(1) if path else None
+
+
+def _requested_ref(goal: str) -> str:
+    match = re.search(r"(?:branch|ref)\s*[:=]?\s*([A-Za-z0-9_./-]+)", goal, re.IGNORECASE)
+    return match.group(1) if match else "main"
+
+
+async def _run_github_apk_build(task_id: int, goal: str) -> dict | None:
+    """Run a GitHub Actions Android build only when the user explicitly requests an APK build."""
+    if not _apk_build_requested(goal):
+        return None
+    repository = _github_repository_from_text(goal)
+    if not repository:
+        question = (
+            "APK build করার জন্য GitHub repository-এর owner/repository নাম বা URL দাও। "
+            "যদি নির্দিষ্ট workflow জানো, তার .yml ফাইলের নামও দাও।"
+        )
+        pause_task_for_input(task_id)
+        add_message(task_id, "orchestrator", "CLARIFICATION_NEEDED:\n" + question)
+        return {"task_id": task_id, "status": "needs_input", "questions": question}
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError(
+            "GitHub plugin is not connected. Open Plugins → GitHub, add GITHUB_TOKEN in Render Environment, "
+            "then retry this task. Required permissions: Contents read, Actions read/write."
+        )
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise RuntimeError("GitHub repository must be in owner/repository format.")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    async with httpx.AsyncClient(timeout=35) as client:
+        response = await client.get(f"https://api.github.com/repos/{repository}/actions/workflows", headers=headers, params={"per_page": 100})
+        if response.status_code >= 400:
+            raise RuntimeError(f"GitHub could not list workflows ({response.status_code}): {response.text[:300]}")
+        workflows = response.json().get("workflows", [])
+        requested = _requested_workflow(goal)
+        if requested:
+            candidates = [w for w in workflows if w.get("path", "").endswith(requested) or w.get("name", "").lower() == requested.lower()]
+        else:
+            candidates = [
+                w for w in workflows
+                if w.get("state") == "active"
+                and re.search(r"android|apk|build", (w.get("name", "") + " " + w.get("path", "")), re.IGNORECASE)
+            ]
+        if len(candidates) != 1:
+            choices = "\n".join(f"- {w.get('name')} ({w.get('path')})" for w in workflows[:20])
+            if not workflows:
+                choices = "এই repository-তে কোনো GitHub Actions workflow পাওয়া যায়নি।"
+            elif not candidates:
+                choices = "Android/APK build নামে workflow খুঁজে পাওয়া যায়নি। Available workflows:\n" + choices
+            else:
+                choices = "একাধিক সম্ভাব্য workflow পাওয়া গেছে:\n" + "\n".join(f"- {w.get('name')} ({w.get('path')})" for w in candidates)
+            question = "কোন GitHub Actions workflow দিয়ে APK build করব? .github/workflows/ এর workflow ফাইলের নাম লিখো।\n" + choices
+            pause_task_for_input(task_id)
+            add_message(task_id, "orchestrator", "CLARIFICATION_NEEDED:\n" + question)
+            return {"task_id": task_id, "status": "needs_input", "questions": question}
+        workflow = candidates[0]
+        ref = _requested_ref(goal)
+        dispatch = await client.post(
+            f"https://api.github.com/repos/{repository}/actions/workflows/{workflow['id']}/dispatches",
+            headers=headers,
+            json={"ref": ref, "inputs": {}},
+        )
+        if dispatch.status_code >= 400:
+            try:
+                detail = dispatch.json().get("message", dispatch.text[:300])
+            except ValueError:
+                detail = dispatch.text[:300]
+            raise RuntimeError(f"GitHub rejected the build request: {detail}")
+    result = (
+        f"GitHub Actions build request accepted.\n"
+        f"Repository: {repository}\n"
+        f"Workflow: {workflow.get('name')} ({workflow.get('path')})\n"
+        f"Branch: {ref}\n"
+        f"Track the build: https://github.com/{repository}/actions"
+    )
+    add_message(task_id, "orchestrator", result)
+    finish_task(task_id, "completed", result)
+    return {"task_id": task_id, "status": "completed", "result": result}
+
+
 async def run_task(task_id: int, goal: str, skip_clarification: bool = False) -> dict:
     try:
         set_active_agent(task_id, "orchestrator")
+        github_result = await _run_github_apk_build(task_id, goal)
+        if github_result is not None:
+            return github_result
         if not skip_clarification:
             check = await clarification_check(goal)
             if check["needs_clarification"] and check["questions"]:
