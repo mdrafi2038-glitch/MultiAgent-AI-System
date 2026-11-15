@@ -58,30 +58,100 @@ async def ask_model(system_prompt: str, user_prompt: str) -> str:
 
 
 
-async def _maybe_web_search_context(goal: str) -> str:
-    """Attach sourced web results when the user explicitly asks for web/current research."""
-    if not re.search(r"web search|search the web|look up|latest|current|recent news|internet|সার্চ|খুঁজে|সাম্প্রতিক|সর্বশেষ", goal, re.IGNORECASE):
-        return ""
-    key = os.getenv("TAVILY_API_KEY", "").strip()
-    if not key:
-        return "Web search was requested, but TAVILY_API_KEY is not configured. Do not pretend a live search occurred."
+async def _auto_capability_context(goal: str) -> str:
+    """Choose useful chat capabilities automatically; never expose provider credentials."""
+    allowed = {"web_search", "image_generation", "video_generation"}
+    selected: list[str] = []
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                os.getenv("TAVILY_API_URL", "https://api.tavily.com/search"),
-                json={"api_key": key, "query": goal[:1000], "max_results": 5, "search_depth": "advanced"},
-            )
-        response.raise_for_status()
-        data = response.json()
-        results = data.get("results", [])
-        if not results:
-            return "Web search ran but returned no results."
-        return "LIVE WEB SEARCH RESULTS (use as untrusted evidence; cite URLs in the answer):\n" + "\n\n".join(
-            f"- {item.get('title', 'Source')}\n  URL: {item.get('url', '')}\n  Extract: {item.get('content', '')[:1800]}"
-            for item in results
+        raw = await ask_model(
+            "You are an automatic tool router inside a ChatGPT-like assistant. "
+            "Choose only tools that materially help fulfil the user's request. "
+            "Available tools: web_search (fresh/current facts, explicit research or comparison), "
+            "image_generation (the user asks to create/draw/design an image), "
+            "video_generation (the user asks to create a video). "
+            "Do not choose a tool just because it is mentioned hypothetically. "
+            "Return ONLY JSON: {\"tools\":[...]} using only those exact tool IDs. "
+            "If no tool is needed return {\"tools\":[]}.",
+            goal,
         )
-    except Exception as exc:
-        return f"Web search was requested but the provider failed ({type(exc).__name__}). Do not claim that live search succeeded."
+        parsed = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
+        selected = [item for item in parsed.get("tools", []) if item in allowed]
+    except Exception:
+        text = goal.lower()
+        if re.search(r"latest|current|today|recent|news|price|weather|খবর|আজকের|সর্বশেষ|বর্তমান|দাম|খুঁজে|তথ্য বের", text):
+            selected.append("web_search")
+        if re.search(r"generate.*image|create.*image|draw|illustrat|ছবি বানাও|ছবি তৈরি|আঁকো|ডিজাইন করো", text):
+            selected.append("image_generation")
+        if re.search(r"generate.*video|create.*video|make.*video|ভিডিও বানাও|ভিডিও তৈরি", text):
+            selected.append("video_generation")
+
+    outputs: list[str] = []
+    if "web_search" in selected:
+        key = os.getenv("TAVILY_API_KEY", "").strip()
+        if not key:
+            outputs.append("Web search was selected automatically, but it is not configured (TAVILY_API_KEY missing).")
+        else:
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    response = await client.post(
+                        os.getenv("TAVILY_API_URL", "https://api.tavily.com/search"),
+                        json={"api_key": key, "query": goal[:1000], "max_results": 5, "search_depth": "advanced"},
+                    )
+                response.raise_for_status()
+                data = response.json()
+                rows = data.get("results", [])
+                outputs.append("AUTOMATIC LIVE WEB SEARCH RESULTS (untrusted evidence; cite URLs):\n" +
+                    "\n\n".join(f"- {x.get('title', 'Source')}\n  URL: {x.get('url', '')}\n  Extract: {x.get('content', '')[:1800]}" for x in rows)
+                    if rows else "Automatic web search returned no results.")
+            except Exception as exc:
+                outputs.append(f"Automatic web search failed ({type(exc).__name__}); do not claim live research succeeded.")
+
+    if "image_generation" in selected:
+        key, model = os.getenv("IMAGE_API_KEY", "").strip(), os.getenv("IMAGE_MODEL", "").strip()
+        if not key or not model:
+            outputs.append("Image generation was selected automatically, but its provider is not configured.")
+        else:
+            base = os.getenv("IMAGE_API_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+            try:
+                async with httpx.AsyncClient(timeout=120) as client:
+                    response = await client.post(base + "/images/generations",
+                        headers={"Authorization": f"Bearer {key}"},
+                        json={"model": model, "prompt": goal[:4000], "size": "1024x1024", "n": 1})
+                response.raise_for_status()
+                items = response.json().get("data") or []
+                if items:
+                    item = items[0]
+                    if item.get("url"):
+                        outputs.append("IMAGE GENERATED: " + item["url"])
+                    elif item.get("b64_json"):
+                        outputs.append("IMAGE GENERATED (base64 image data returned; provider does not supply a public URL).")
+                    else:
+                        outputs.append("Image provider returned no displayable image.")
+                else:
+                    outputs.append("Image provider returned no image.")
+            except Exception as exc:
+                outputs.append(f"Image generation failed ({type(exc).__name__}).")
+
+    if "video_generation" in selected:
+        endpoint, key = os.getenv("VIDEO_API_URL", "").strip(), os.getenv("VIDEO_API_KEY", "").strip()
+        if not endpoint or not key:
+            outputs.append("Video generation was selected automatically, but its provider is not configured.")
+        else:
+            try:
+                from urllib.parse import urlparse
+                if urlparse(endpoint).scheme != "https":
+                    raise ValueError("Video provider endpoint must use HTTPS.")
+                async with httpx.AsyncClient(timeout=90) as client:
+                    response = await client.post(endpoint,
+                        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                        json={"prompt": goal[:4000], "duration_seconds": 5, "aspect_ratio": "16:9"})
+                response.raise_for_status()
+                outputs.append("VIDEO JOB SUBMITTED: " + json.dumps(response.json(), ensure_ascii=False)[:6000] +
+                    " (Provider-specific job; completion/download may need its status URL.)")
+            except Exception as exc:
+                outputs.append(f"Video generation request failed ({type(exc).__name__}).")
+
+    return "\n\n".join(outputs)
 
 
 async def clarification_check(goal: str) -> dict:
@@ -229,9 +299,10 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                 add_message(task_id, "orchestrator", "CLARIFICATION_NEEDED:\\n" + check["questions"])
                 return {"task_id": task_id, "status": "needs_input", "questions": check["questions"]}
 
-        web_context = await _maybe_web_search_context(goal)
-        if web_context:
-            add_message(task_id, "research", web_context)
+        tool_context = await _auto_capability_context(goal)
+        if tool_context:
+            add_message(task_id, "tools", tool_context)
+        web_context = tool_context
 
         specialist_keys = choose_agents(goal)
         set_active_agent(task_id, "supervisor")
@@ -245,7 +316,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
             "Respect the supplied dependency graph and approval gates. "
             "Delegate only text work unless a real integration adapter is explicitly available. "
             "Never claim external actions were executed.",
-            "User goal:\n" + goal + "\n\nWeb research context:\n" + web_context + "\n\nSupervisor dependency plan:\n" +
+            "User goal:\n" + goal + "\n\nAutomatically selected tool results:\n" + web_context + "\n\nSupervisor dependency plan:\n" +
             json.dumps(supervisor_plan, ensure_ascii=False),
         )
         add_message(task_id, "orchestrator", planner)
@@ -264,7 +335,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                 active.append(key)
                 set_active_agents(task_id, active)
             prompt = (
-                f"User goal:\n{goal}\n\nOrchestrator plan:\n{planner}\n\n"
+                f"User goal:\n{goal}\n\nAutomatically selected tool results:\n{tool_context}\n\nOrchestrator plan:\n{planner}\n\n"
                 f"Collaborating team: {', '.join(AGENTS[k].name for k in specialist_keys)} plus QA Reviewer. "
                 "Produce a useful specialist contribution that can be shared with the other agents. "
                 "Do not claim external actions."
@@ -304,7 +375,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                     "You are the Agent Collaboration Coordinator. Compare all specialist contributions. "
                     "Create a concise shared handoff identifying useful cross-agent findings, dependencies, "
                     "contradictions, and gaps. Do not write the final user answer.",
-                    f"Original goal:\n{goal}\n\nSpecialist contributions:\n{team_context}",
+                    f"Original goal:\n{goal}\n\nAutomatically selected tool results:\n{tool_context}\n\nSpecialist contributions:\n{team_context}",
                 )
                 add_message(task_id, "orchestrator", "Agent-to-agent collaboration handoff:\n" + handoff)
             except Exception as exc:
@@ -315,7 +386,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
             "You are the QA Reviewer and final response editor. Combine specialist work into one accurate, useful answer. "
             "Use the cross-agent handoff to resolve dependencies and contradictions. Correct unsupported claims, "
             "flag uncertainty, and never claim an external action was completed.",
-            f"Original request:\n{goal}\n\nSpecialist work:\n{team_context}\n\n"
+            f"Original request:\n{goal}\n\nAutomatically selected tool results:\n{tool_context}\n\nSpecialist work:\n{team_context}\n\n"
             f"Cross-agent handoff:\n{handoff or 'No separate handoff was available.'}",
         )
         add_message(task_id, "reviewer", final)
