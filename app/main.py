@@ -17,6 +17,7 @@ from .storage import (
     recent_tasks,
     recover_interrupted_tasks,
     restart_task,
+    resume_task_with_clarification,
     task_messages,
 )
 from .engine import run_task
@@ -42,6 +43,10 @@ def require_auth(x_app_password: str | None = Header(default=None)):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
+
+
+class ClarificationRequest(BaseModel):
+    response: str = Field(min_length=1, max_length=12000)
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])
@@ -76,6 +81,24 @@ async def chat(body: ChatRequest, background_tasks: BackgroundTasks, _: bool = D
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     task_id = create_task(message)
     background_tasks.add_task(run_task, task_id, message)
+    return {"task_id": task_id, "status": "running"}
+
+
+@app.post("/api/tasks/{task_id}/clarify", status_code=202)
+async def clarify_task(task_id: int, body: ClarificationRequest, background_tasks: BackgroundTasks, _: bool = Depends(require_auth)):
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task["status"] != "needs_input":
+        raise HTTPException(status_code=409, detail="This task is not waiting for clarification.")
+    response = body.response.strip()
+    if not response:
+        raise HTTPException(status_code=400, detail="Please provide your clarification.")
+    if not resume_task_with_clarification(task_id, response):
+        raise HTTPException(status_code=409, detail="Task state changed. Refresh and try again.")
+    add_message(task_id, "user", response)
+    updated = get_task(task_id)
+    background_tasks.add_task(run_task, task_id, updated["user_message"], True)
     return {"task_id": task_id, "status": "running"}
 
 
