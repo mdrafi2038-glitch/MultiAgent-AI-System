@@ -29,7 +29,7 @@ def require_auth(x_app_password: str | None = Header(default=None)):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"ok": True, "service": "multiagent-ai-system", "dashboardConfigured": bool(APP_PASSWORD)}
 
