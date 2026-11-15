@@ -220,7 +220,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
 
         # Publish the selected team before execution so the dashboard can show
         # every assigned specialist as IN QUEUE until it actually starts.
-        add_message(task_id, "system", "AGENTS_SELECTED:" + ",".join(specialist_keys + ["reviewer"]))
+        planned_agents = ["supervisor"] + (["github_agent"] if "github" in supervisor_plan["integrations"] else []) + (["render_agent"] if "render" in supervisor_plan["integrations"] else []) + (["integration_agent"] if "api_plugin" in supervisor_plan["integrations"] else [])\n        add_message(task_id, "system", "AGENTS_SELECTED:" + ",".join(planned_agents + specialist_keys + ["reviewer"]))
         active = []
         set_active_agents(task_id, active)
         active_lock = asyncio.Lock()
