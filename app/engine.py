@@ -301,7 +301,10 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                         active.remove(key)
                     set_active_agents(task_id, active)
 
-        results = await asyncio.gather(*(run_specialist(key) for key in specialist_keys))
+        # Run specialists in strict queue order: only one agent is WORKING at a time.
+        results = []
+        for key in specialist_keys:
+            results.append(await run_specialist(key))
         successful = [item for item in results if item["output"]]
         if not successful:
             raise RuntimeError("All specialist agents failed after automatic retries.")
