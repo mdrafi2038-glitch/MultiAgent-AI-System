@@ -1,7 +1,7 @@
 import hmac
 import os
 from pathlib import Path
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -13,7 +13,7 @@ from .engine import run_task
 from .agents import AGENTS
 
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
-app = FastAPI(title="MultiAgent AI System", version="0.2.0")
+app = FastAPI(title="MultiAgent AI System", version="0.3.0")
 
 @app.on_event("startup")
 def startup():
@@ -48,13 +48,14 @@ def task_detail(task_id: int, _: bool = Depends(require_auth)):
         raise HTTPException(status_code=404, detail="Task not found")
     return {"task": found[0], "messages": task_messages(task_id)}
 
-@app.post("/api/chat")
-async def chat(body: ChatRequest, _: bool = Depends(require_auth)):
+@app.post("/api/chat", status_code=202)
+async def chat(body: ChatRequest, background_tasks: BackgroundTasks, _: bool = Depends(require_auth)):
     message = body.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     task_id = create_task(message)
-    return await run_task(task_id, message)
+    background_tasks.add_task(run_task, task_id, message)
+    return {"task_id": task_id, "status": "running"}
 
 @app.get("/", response_class=HTMLResponse)
 def home():
