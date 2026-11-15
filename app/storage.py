@@ -100,14 +100,11 @@ def init_db():
 
 def create_task(message: str) -> int:
     with connect() as db:
-        cur = db.execute(
-            _sql("INSERT INTO tasks(user_message,status,created_at) VALUES(%s,%s,%s)"),
-            (message, "running", datetime.now(timezone.utc).isoformat()),
-        )
+        statement = "INSERT INTO tasks(user_message,status,created_at) VALUES(%s,%s,%s)"
         if _is_postgres():
-            # PostgreSQL returns the generated identity value explicitly.
-            row = db.execute("SELECT currval(pg_get_serial_sequence('tasks', 'id')) AS id").fetchone()
-            return int(row["id"])
+            cur = db.execute(statement + " RETURNING id", (message, "running", datetime.now(timezone.utc).isoformat()))
+            return int(cur.fetchone()["id"])
+        cur = db.execute(_sql(statement), (message, "running", datetime.now(timezone.utc).isoformat()))
         return int(cur.lastrowid)
 
 
