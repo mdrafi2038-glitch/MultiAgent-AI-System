@@ -25,12 +25,14 @@ from .storage import (
 from .engine import run_task
 from .agents import AGENTS
 from .plugin_hub import router as custom_plugins_router
+from .capabilities import router as capabilities_router
 
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 GITHUB_API = "https://api.github.com"
 app = FastAPI(title="MultiAgent AI System", version="0.7.0")
 app.include_router(custom_plugins_router)
+app.include_router(capabilities_router)
 
 
 @app.on_event("startup")
@@ -69,7 +71,7 @@ def health():
 
 @app.get("/api/agents")
 def agents(_: bool = Depends(require_auth)):
-    team = [{"id": "orchestrator", "name": "Main Orchestrator", "role": "Task coordination and cross-agent handoff"}]
+    team = [{"id": "supervisor", "name": "Supervisor Agent", "role": "Dependency planning, tool routing and approval control"}, {"id": "orchestrator", "name": "Main Orchestrator", "role": "Task coordination and cross-agent handoff"}, {"id": "github_agent", "name": "GitHub Agent", "role": "Repository and workflow integration (adapter-gated)"}, {"id": "render_agent", "name": "Render Agent", "role": "Hosting, logs and deployment integration (approval-gated)"}, {"id": "integration_agent", "name": "API Integration Agent", "role": "Configured API plugin integration (approval-gated)"}]
     team.extend([{"id": a.key, "name": a.name, "role": a.role} for a in AGENTS.values()])
     return team
 

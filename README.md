@@ -74,3 +74,29 @@ GitHub workflows are external actions and only start after the user explicitly p
 5. Use the action buttons to call an API. GET requests are read-only; every other method prompts for a separate confirmation before execution.
 
 The connector supports services with compatible HTTPS APIs. It does not guarantee access to every website, does not bypass login/anti-bot controls, and does not yet auto-import OpenAPI specifications or perform browser automation. A website without a supported API needs a separate, explicitly designed integration.
+
+
+## Optional AI capability suite
+
+The AI Tools dashboard exposes optional adapters. Each provider is independent; configure only the services you use.
+
+| Feature | Environment variables | Notes |
+|---|---|---|
+| Web search | `TAVILY_API_KEY` | Uses Tavily Search API and returns source URLs. |
+| Image generation | `IMAGE_API_KEY`, `IMAGE_MODEL`, optional `IMAGE_API_BASE_URL` | OpenAI-compatible Images API. |
+| Video generation | `VIDEO_API_URL`, `VIDEO_API_KEY` | Generic HTTPS submit adapter; task response/status format depends on provider. |
+| File analysis | None for extraction; model key for AI summary | TXT, MD, CSV, JSON, PDF, DOCX and common image formats; max 10 MB. Images require a vision-capable configured model. |
+| Browser automation | `BROWSERLESS_URL`, `BROWSERLESS_TOKEN`, `BROWSER_ALLOWED_HOSTS` | Browserless-compatible remote browser. Only allowlisted public domains; mutating actions need approval. |
+| Render connector | `RENDER_API_KEY`, `RENDER_SERVICE_ID` | Reads service/deploy status. Deploy endpoint requires explicit approval. |
+| GitHub connector | `GITHUB_TOKEN` | Existing Actions integration. |
+| Custom connectors | Plugin Hub | Allowlisted HTTPS API actions; write actions require approval. |
+
+### Provider setup
+
+1. Open the Render service Environment page.
+2. Add only the environment variables for providers you choose. Never paste secrets into chat or commit them to Git.
+3. For image generation, use an OpenAI-compatible provider that implements `POST /images/generations`.
+4. For video generation, set the exact HTTPS submit endpoint and bearer token supplied by the chosen video provider. The adapter returns the provider's raw job response; provider-specific polling/download support may need an adapter.
+5. For browser automation, configure the remote browser endpoint and a comma-separated allowlist such as `example.com,docs.example.org`. Do not allowlist domains you do not control or trust.
+
+All capability status responses reveal only whether a credential is configured, never its value. Browser navigation is limited to allowlisted public hosts. External writes and deployments require an explicit approval flag in addition to dashboard authentication.
