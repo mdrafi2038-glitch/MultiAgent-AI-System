@@ -21,8 +21,13 @@ from .storage import (
     restart_task,
     resume_task_with_clarification,
     task_messages,
+    create_conversation,
+    list_conversations,
+    conversation_messages,
+    add_conversation_message,
+    get_conversation,
 )
-from .engine import run_task
+from .engine import run_task, ask_model
 from .agents import AGENTS
 from .plugin_hub import router as custom_plugins_router
 from .capabilities import router as capabilities_router
@@ -51,6 +56,11 @@ def require_auth(x_app_password: str | None = Header(default=None)):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
+
+
+class ChatModeRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=12000)
+    conversation_id: int | None = None
 
 
 class ClarificationRequest(BaseModel):
@@ -87,6 +97,52 @@ def task_detail(task_id: int, _: bool = Depends(require_auth)):
     if not found:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"task": found, "messages": task_messages(task_id)}
+
+
+@app.get("/api/conversations")
+def conversations(_: bool = Depends(require_auth)):
+    return list_conversations()
+
+
+@app.get("/api/conversations/{conversation_id}")
+def conversation_detail(conversation_id: int, _: bool = Depends(require_auth)):
+    found = get_conversation(conversation_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"conversation": found, "messages": conversation_messages(conversation_id)}
+
+
+@app.post("/api/chat-mode")
+async def chat_mode(body: ChatModeRequest, _: bool = Depends(require_auth)):
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    conversation_id = body.conversation_id
+    if conversation_id is not None and not get_conversation(conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conversation_id is None:
+        conversation_id = create_conversation(message[:70])
+    history = conversation_messages(conversation_id)
+    add_conversation_message(conversation_id, "user", message)
+    transcript = history[-18:] + [{"role": "user", "content": message}]
+    context = "\\n".join(
+        ("User: " if item["role"] == "user" else "Assistant: ") + item["content"]
+        for item in transcript
+    )
+    try:
+        answer = await ask_model(
+            "You are the Chat mode of a dual-mode assistant. Respond naturally and helpfully in the user's language. "
+            "This is conversation-only mode: do not start tasks, delegate agents, call tools, modify files, or claim actions were performed. "
+            "If the user wants work done by agents, explain that they should switch to Agent mode. "
+            "You may discuss ideas, gather requirements, explain options, and help prepare a task. "
+            "Keep the conversation context from the transcript.",
+            context,
+        )
+    except Exception as exc:
+        add_conversation_message(conversation_id, "assistant", "I couldn't get a response from the AI provider: " + str(exc)[:500])
+        raise HTTPException(status_code=502, detail="Chat response failed: " + str(exc)[:300])
+    add_conversation_message(conversation_id, "assistant", answer)
+    return {"conversation_id": conversation_id, "answer": answer}
 
 
 @app.post("/api/chat", status_code=202)
