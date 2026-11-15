@@ -1,5 +1,8 @@
 import os
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
 from .agents import AGENTS, choose_agents
 from .storage import add_message, finish_task
 
