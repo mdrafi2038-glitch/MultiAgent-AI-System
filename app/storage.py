@@ -147,8 +147,13 @@ def add_message(task_id: int, agent: str, content: str):
 
 def finish_task(task_id: int, status: str, result: str):
     with connect() as db:
-        db.execute(_sql("UPDATE tasks SET status=%s, result=%s, active_agent=NULL WHERE id=%s"),
-                   (status, result, task_id))
+        if status == "failed":
+            # Keep the last active agent so the dashboard can mark the responsible card red.
+            db.execute(_sql("UPDATE tasks SET status=%s, result=%s WHERE id=%s"),
+                       (status, result, task_id))
+        else:
+            db.execute(_sql("UPDATE tasks SET status=%s, result=%s, active_agent=NULL WHERE id=%s"),
+                       (status, result, task_id))
 
 
 def recent_tasks(limit: int = 30):
