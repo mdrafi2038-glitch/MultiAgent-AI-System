@@ -9,6 +9,7 @@ A separate multi-agent assistant with a Main Orchestrator, specialist agents, pe
 - SQLite task and agent-message history.
 - Responsive web dashboard and JSON API.
 - OpenAI-compatible model endpoint (OpenRouter by default).
+- Password-protected dashboard and task APIs; fails closed until APP_PASSWORD is configured.
 
 ## Safety and current scope
 This first version is text-only. Agents can plan and draft work but do not control a phone/browser, publish content, access private accounts, spend money, or modify external systems. Add explicit user approval and narrowly scoped integrations before enabling side effects.
