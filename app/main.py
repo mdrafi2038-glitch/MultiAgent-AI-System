@@ -1,3 +1,4 @@
+import json
 import hmac
 import os
 import re
@@ -131,18 +132,65 @@ async def chat_mode(body: ChatModeRequest, _: bool = Depends(require_auth)):
     )
     try:
         answer = await ask_model(
-            "You are the Chat mode of a dual-mode assistant. Respond naturally and helpfully in the user's language. "
-            "This is conversation-only mode: do not start tasks, delegate agents, call tools, modify files, or claim actions were performed. "
-            "If the user wants work done by agents, explain that they should switch to Agent mode. "
-            "You may discuss ideas, gather requirements, explain options, and help prepare a task. "
-            "Keep the conversation context from the transcript.",
+            "You are Chat mode, a conversational product-planning assistant. Reply ONLY as valid JSON with keys type and message. "
+            "type must be chat, questions, or ready. For normal conversation use type=chat. "
+            "When the user wants an app, website, or software built, do NOT start agents or claim work has begun. "
+            "Instead gather requirements using type=questions and a questions array. Each question has question, options (3-4 choices), multiple (boolean), allow_other (boolean). "
+            "Ask only useful unanswered questions and tailor them to the product, including platform, purpose, features, users, data/storage, design, login and delivery where relevant. "
+            "When enough details are known, use type=ready and include a clear summary field. "
+            "Never start work yourself. Only the separate Start Building confirmation can launch agents. Match the user's language and preserve context.",
             context,
         )
     except Exception as exc:
         add_conversation_message(conversation_id, "assistant", "I couldn't get a response from the AI provider: " + str(exc)[:500])
         raise HTTPException(status_code=502, detail="Chat response failed: " + str(exc)[:300])
+    try:
+        payload = json.loads(answer)
+        if not isinstance(payload, dict) or payload.get("type") not in {"chat", "questions", "ready"}:
+            raise ValueError("Unexpected response format")
+        if payload.get("type") == "questions":
+            qs = payload.get("questions")
+            if not isinstance(qs, list):
+                raise ValueError("Questions missing")
+            payload["questions"] = [
+                {"question": str(q.get("question", "A detail"))[:500],
+                 "options": [str(x)[:160] for x in q.get("options", [])[:4]],
+                 "multiple": bool(q.get("multiple", False)),
+                 "allow_other": bool(q.get("allow_other", True))}
+                for q in qs[:6] if isinstance(q, dict)
+            ]
+        answer = json.dumps(payload, ensure_ascii=False)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        answer = json.dumps({"type": "chat", "message": answer}, ensure_ascii=False)
     add_conversation_message(conversation_id, "assistant", answer)
     return {"conversation_id": conversation_id, "answer": answer}
+
+
+class StartBuildRequest(BaseModel):
+    conversation_id: int
+
+
+@app.post("/api/chat-mode/start-build", status_code=202)
+async def start_chat_build(body: StartBuildRequest, background_tasks: BackgroundTasks, _: bool = Depends(require_auth)):
+    if not get_conversation(body.conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    history = conversation_messages(body.conversation_id)
+    if not history:
+        raise HTTPException(status_code=400, detail="This chat has no requirements yet.")
+    last_assistant = next((item for item in reversed(history) if item["role"] == "assistant"), None)
+    try:
+        ready_state = json.loads(last_assistant["content"]) if last_assistant else {}
+    except (ValueError, TypeError):
+        ready_state = {}
+    if ready_state.get("type") != "ready":
+        raise HTTPException(status_code=409, detail="Please finish the planning questions before starting the build.")
+    transcript = "\\n".join(("USER: " if item["role"] == "user" else "ASSISTANT: ") + item["content"] for item in history)
+    task_message = ("Build the app/website described in this approved Chat-mode planning conversation. "
+                    "Treat the user's answers as requirements, use sensible defaults for minor gaps, and do not ask answered questions again.\\n\\n" + transcript)
+    task_id = create_task(task_message)
+    background_tasks.add_task(run_task, task_id, task_message)
+    add_conversation_message(body.conversation_id, "assistant", "BUILD_STARTED: Agent task #" + str(task_id) + " has started.")
+    return {"task_id": task_id, "status": "running"}
 
 
 @app.post("/api/chat", status_code=202)
