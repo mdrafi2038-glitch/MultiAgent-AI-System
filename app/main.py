@@ -1,3 +1,4 @@
+import json
 import hmac
 import os
 import re
@@ -176,6 +177,13 @@ async def start_chat_build(body: StartBuildRequest, background_tasks: Background
     history = conversation_messages(body.conversation_id)
     if not history:
         raise HTTPException(status_code=400, detail="This chat has no requirements yet.")
+    last_assistant = next((item for item in reversed(history) if item["role"] == "assistant"), None)
+    try:
+        ready_state = json.loads(last_assistant["content"]) if last_assistant else {}
+    except (ValueError, TypeError):
+        ready_state = {}
+    if ready_state.get("type") != "ready":
+        raise HTTPException(status_code=409, detail="Please finish the planning questions before starting the build.")
     transcript = "\\n".join(("USER: " if item["role"] == "user" else "ASSISTANT: ") + item["content"] for item in history)
     task_message = ("Build the app/website described in this approved Chat-mode planning conversation. "
                     "Treat the user's answers as requirements, use sensible defaults for minor gaps, and do not ask answered questions again.\\n\\n" + transcript)
