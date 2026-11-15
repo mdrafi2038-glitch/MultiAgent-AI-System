@@ -62,3 +62,17 @@ def test_recover_interrupted_tasks(tmp_path, monkeypatch):
     assert task["status"] == "failed"
     assert "server restart" in task["result"]
     assert task["active_agent"] is None
+
+
+def test_failed_task_retains_active_agent_for_dashboard(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "history.db"))
+    storage.init_db()
+    task_id = storage.create_task("Fail during research")
+    storage.set_active_agent(task_id, "research")
+
+    storage.finish_task(task_id, "failed", "Provider error")
+
+    task = storage.get_task(task_id)
+    assert task["status"] == "failed"
+    assert task["active_agent"] == "research"
