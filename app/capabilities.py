@@ -100,7 +100,76 @@ def status(_: bool = Depends(require_auth)):
     return {"capabilities": capability_status(), "secrets_exposed": False}
 
 
-@router.post("/web-search")
+
+
+@router.get("/connectors")
+def connectors(_: bool = Depends(require_auth)):
+    items = capability_status()
+    return {"connectors": [
+        {"id": key, "name": key.replace("_", " ").title(), "connected": value["configured"],
+         "provider": value["provider"], "required_env": value["required_env"]}
+        for key, value in items.items() if key in {"github", "render", "custom_api_plugins"}
+    ]}
+
+
+@router.get("/render/service")
+async def render_service(_: bool = Depends(require_auth)):
+    key, service_id = os.getenv("RENDER_API_KEY", "").strip(), os.getenv("RENDER_SERVICE_ID", "").strip()
+    if not key or not service_id:
+        raise HTTPException(503, "Render connector needs RENDER_API_KEY and RENDER_SERVICE_ID.")
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            response = await client.get(f"https://api.render.com/v1/services/{service_id}",
+                headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+        response.raise_for_status()
+        data = response.json()
+        return {"id": data.get("id"), "name": data.get("name"), "type": data.get("type"),
+                "serviceDetails": data.get("serviceDetails"), "suspended": data.get("suspended")}
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Render service lookup failed: {type(exc).__name__}.") from exc
+
+
+@router.get("/render/deploys")
+async def render_deploys(_: bool = Depends(require_auth)):
+    key, service_id = os.getenv("RENDER_API_KEY", "").strip(), os.getenv("RENDER_SERVICE_ID", "").strip()
+    if not key or not service_id:
+        raise HTTPException(503, "Render connector needs RENDER_API_KEY and RENDER_SERVICE_ID.")
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            response = await client.get(f"https://api.render.com/v1/services/{service_id}/deploys",
+                headers={"Authorization": f"Bearer {key}", "Accept": "application/json"}, params={"limit": 10})
+        response.raise_for_status()
+        rows = response.json()
+        return {"deploys": [{"id": row.get("id"), "status": row.get("status"),
+            "createdAt": row.get("createdAt"), "finishedAt": row.get("finishedAt"),
+            "commit": row.get("commit")} for row in rows]}
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Render deploy history lookup failed: {type(exc).__name__}.") from exc
+
+
+class RenderDeployRequest(BaseModel):
+    approved: bool = False
+
+
+@router.post("/render/deploy")
+async def render_deploy(body: RenderDeployRequest, _: bool = Depends(require_auth)):
+    if not body.approved:
+        raise HTTPException(409, "A fresh explicit approval is required before deploying.")
+    key, service_id = os.getenv("RENDER_API_KEY", "").strip(), os.getenv("RENDER_SERVICE_ID", "").strip()
+    if not key or not service_id:
+        raise HTTPException(503, "Render connector needs RENDER_API_KEY and RENDER_SERVICE_ID.")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(f"https://api.render.com/v1/services/{service_id}/deploys",
+                headers={"Authorization": f"Bearer {key}", "Accept": "application/json", "Content-Type": "application/json"},
+                json={"clearCache": "do_not_clear"})
+        response.raise_for_status()
+        data = response.json()
+        return {"accepted": True, "deploy_id": data.get("id"), "status": data.get("status"),
+                "message": "Render deployment request accepted after explicit approval."}
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Render deployment request failed: {type(exc).__name__}.") from exc
+\n@router.post("/web-search")
 async def web_search(body: SearchRequest, _: bool = Depends(require_auth)):
     key = os.getenv("TAVILY_API_KEY", "").strip()
     if not key:
