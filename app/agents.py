@@ -19,12 +19,14 @@ AGENTS = {
 def choose_agents(goal: str) -> list[str]:
     text = goal.lower()
     selected = []
-    if any(x in text for x in ("code", "app", "website", "bug", "program", "python", "github", "deploy")):
-        selected.append("coder")
-    if any(x in text for x in ("research", "find", "latest", "compare", "source", "look up")):
+
+    # Match natural task wording and explicit agent names, including Bengali prompts.
+    if any(x in text for x in ("research", "research agent", "find", "latest", "compare", "source", "look up", "বাজার বিশ্লেষণ", "তথ্য খুঁজ")):
         selected.append("research")
-    if any(x in text for x in ("write", "email", "post", "draft", "story", "rewrite")):
+    if any(x in text for x in ("writer", "writer agent", "writing", "write", "email", "post", "draft", "story", "rewrite", "পরিকল্পনা লিখ", "রিপোর্ট লিখ")):
         selected.append("writer")
-    if any(x in text for x in ("data", "calculate", "report", "sales", "analyze", "analysis")):
+    if any(x in text for x in ("coder", "coding agent", "coding", "code", "html", "calculator", "app", "website", "bug", "program", "python", "github", "deploy", "ক্যালকুলেটর", "কোড")):
+        selected.append("coder")
+    if any(x in text for x in ("data", "data agent", "calculate", "calculation", "report", "sales", "analyze", "analysis", "হিসাব", "খরচ", "আয়", "লাভ")):
         selected.append("data")
     return selected or ["research", "writer"]
