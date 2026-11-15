@@ -71,6 +71,7 @@ def init_db():
             """)
             db.execute("CREATE INDEX IF NOT EXISTS idx_messages_task_id ON messages(task_id)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at)")
+            db.execute("""CREATE TABLE IF NOT EXISTS custom_plugins (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, base_url TEXT NOT NULL, auth_env TEXT, actions_json TEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TEXT NOT NULL)""")
         else:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -90,6 +91,7 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_task_id ON messages(task_id);
                 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
+                CREATE TABLE IF NOT EXISTS custom_plugins (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, base_url TEXT NOT NULL, auth_env TEXT, actions_json TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
             """)
             try:
                 db.execute("ALTER TABLE tasks ADD COLUMN active_agent TEXT")
