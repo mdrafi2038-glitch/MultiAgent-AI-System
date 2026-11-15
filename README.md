@@ -3,11 +3,15 @@
 A separate multi-agent assistant with a Main Orchestrator, specialist agents, task history, and a QA reviewer.
 
 ## Current capabilities
-- Main orchestrator creates a task plan.
+- Main orchestrator creates a task plan and delegates work.
 - Specialist agents: Research, Writer, Coding, and Data.
+- Independent specialists execute concurrently; the dashboard highlights every currently active agent.
+- Cross-agent collaboration handoff compares specialist findings, dependencies, contradictions, and gaps before QA.
 - QA Reviewer consolidates and checks agent outputs.
+- Transient AI provider/network errors retry automatically up to three attempts with backoff.
+- Tasks interrupted by a server restart are marked failed and can be retried from the dashboard.
 - Task and agent-message history.
-- SQLite for local development; PostgreSQL for durable hosted history.
+- SQLite for local development; PostgreSQL/Supabase for durable hosted history.
 - Responsive web dashboard and JSON API.
 - OpenAI-compatible model endpoint (OpenRouter by default).
 - Password-protected dashboard and task APIs; fails closed until APP_PASSWORD is configured.
@@ -22,7 +26,7 @@ A separate multi-agent assistant with a Main Orchestrator, specialist agents, ta
 ## Environment variables
 - `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`) for model requests
 - `OPENAI_BASE_URL` (default `https://openrouter.ai/api/v1`)
-- `AI_MODEL` (default `openrouter/auto`)
+- `AI_MODEL` (Render configuration uses `openrouter/free`)
 - `APP_PASSWORD` for dashboard/API authentication
 - `DATABASE_URL` optional PostgreSQL connection string
 - `APP_DB_PATH` SQLite fallback path (default `./data/multiagent.db`)
@@ -39,4 +43,4 @@ Never commit API keys, passwords, or database connection strings.
 7. Open `http://127.0.0.1:8000`
 
 ## Safety and current scope
-This version is text-only. Agents can plan and draft work but do not control a phone/browser, publish content, access private accounts, spend money, or modify external systems. Add explicit user approval and narrowly scoped integrations before enabling side effects.
+This version is text-only. Agents can plan, analyze, and draft work but do not control a phone/browser, publish content, access private accounts, spend money, or execute external actions. Add explicit user approval and narrowly scoped integrations before enabling side effects.
