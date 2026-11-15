@@ -46,6 +46,7 @@ async def ask_model_with_recovery(task_id: int, agent: str, stage: str,
     """Keep recovering from transient failures until the stage succeeds or is truly blocked."""
     attempt = 0
     recovery_notes = ""
+    last_error = None
     while True:
         if attempt:
             report_progress(
@@ -61,10 +62,12 @@ async def ask_model_with_recovery(task_id: int, agent: str, stage: str,
             )
             recovery_notes += (
                 f"\n\nRECOVERY CONTEXT: Attempt {attempt - 1} failed. "
+                f"Previous error: {str(last_error)[:500]}. "
                 "Reassess the approach, correct the issue, simplify or use an alternative method, "
                 "preserve completed work, and continue toward a valid deliverable. "
                 "Never claim an external action that was not actually performed."
             )
+            recovery_notes = recovery_notes[-5000:]
             await asyncio.sleep(min(2 ** min(attempt - 1, 6), 60))
         try:
             return await ask_model(
@@ -73,6 +76,7 @@ async def ask_model_with_recovery(task_id: int, agent: str, stage: str,
                 user_prompt + recovery_notes,
             )
         except Exception as exc:
+            last_error = exc
             detail = f"{type(exc).__name__}: {exc}".lower()
             hard_blockers = (
                 "not configured", "401", "403", "402", "invalid api key",
