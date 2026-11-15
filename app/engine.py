@@ -7,7 +7,7 @@ from .agents import AGENTS, choose_agents
 from .storage import add_message, finish_task
 
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
-API_KEY = os.getenv("OPENAI_API_KEY", "")
+API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY", "")
 MODEL = os.getenv("AI_MODEL", "openrouter/auto")
 
 async def ask_model(system_prompt: str, user_prompt: str) -> str:
