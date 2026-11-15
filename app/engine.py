@@ -42,35 +42,52 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
 
 async def ask_model_with_recovery(task_id: int, agent: str, stage: str,
                                   system_prompt: str, user_prompt: str,
-                                  max_recoveries: int = 3) -> str:
-    """Diagnose model-stage failures and retry with an adapted approach."""
+                                  max_recoveries: int | None = None) -> str:
+    """Keep recovering from transient failures until the stage succeeds or is truly blocked."""
+    attempt = 0
     recovery_notes = ""
-    last_error = None
-    for attempt in range(max_recoveries + 1):
+    while True:
         if attempt:
-            report_progress(task_id, f"{stage} · Supervisor recovery {attempt}/{max_recoveries}", "supervisor")
-            add_message(task_id, "supervisor",
-                        f"RECOVERY: {stage} failed ({type(last_error).__name__}: {str(last_error)[:400]}). "
-                        f"Trying an adjusted approach, attempt {attempt}/{max_recoveries}.")
-            recovery_notes += (
-                f"\n\nRECOVERY CONTEXT: Previous attempt failed with "
-                f"{type(last_error).__name__}: {str(last_error)[:500]}. "
-                "Reassess the approach, correct the issue, simplify if needed, preserve completed work, "
-                "and produce the best valid result without claiming unperformed actions."
+            report_progress(
+                task_id,
+                f"{stage} · Supervisor recovery attempt {attempt}",
+                "supervisor",
             )
-            await asyncio.sleep(min(2 ** (attempt - 1), 12))
+            add_message(
+                task_id,
+                "supervisor",
+                f"RECOVERY: {stage} has not succeeded yet. Retrying with an adjusted approach "
+                f"(attempt {attempt}).",
+            )
+            recovery_notes += (
+                f"\n\nRECOVERY CONTEXT: Attempt {attempt - 1} failed. "
+                "Reassess the approach, correct the issue, simplify or use an alternative method, "
+                "preserve completed work, and continue toward a valid deliverable. "
+                "Never claim an external action that was not actually performed."
+            )
+            await asyncio.sleep(min(2 ** min(attempt - 1, 6), 60))
         try:
             return await ask_model(
-                system_prompt + " Act as a self-repairing agent: adapt methods, work around nonessential "
+                system_prompt + " Act as a self-repairing agent: adapt methods, work around transient "
                 "obstacles, and continue toward the requested deliverable.",
                 user_prompt + recovery_notes,
             )
         except Exception as exc:
-            last_error = exc
-    raise RuntimeError(
-        f"{stage} could not recover after {max_recoveries} supervisor-led repair attempts: "
-        f"{type(last_error).__name__}: {last_error}"
-    ) from last_error
+            detail = f"{type(exc).__name__}: {exc}".lower()
+            hard_blockers = (
+                "not configured", "401", "403", "402", "invalid api key",
+                "authentication failed", "insufficient_quota", "model_not_found",
+                "no available channel", "permission denied",
+            )
+            if any(marker in detail for marker in hard_blockers):
+                add_message(
+                    task_id,
+                    "supervisor",
+                    f"RECOVERY_BLOCKED: {stage} requires an external credential, account permission, "
+                    f"or provider configuration that this agent cannot create or bypass. Details: {str(exc)[:500]}",
+                )
+                raise
+            attempt += 1
 
 
 def report_progress(task_id: int, stage: str, agent: str = 'orchestrator') -> None:
