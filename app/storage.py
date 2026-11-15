@@ -108,9 +108,35 @@ def create_task(message: str) -> int:
         return int(cur.lastrowid)
 
 
-def set_active_agent(task_id: int, agent: str | None):
+def get_task(task_id: int):
     with connect() as db:
-        db.execute(_sql("UPDATE tasks SET active_agent=%s WHERE id=%s"), (agent, task_id))
+        row = db.execute(_sql("SELECT id,user_message,status,result,created_at,active_agent FROM tasks WHERE id=%s"), (task_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def restart_task(task_id: int) -> bool:
+    with connect() as db:
+        cur = db.execute(_sql("UPDATE tasks SET status=%s,result=NULL,active_agent=NULL WHERE id=%s AND status=%s"),
+                         ("running", task_id, "failed"))
+        return cur.rowcount == 1
+
+
+def recover_interrupted_tasks() -> int:
+    with connect() as db:
+        cur = db.execute(_sql(
+            "UPDATE tasks SET status=%s,result=%s,active_agent=NULL WHERE status=%s"
+        ), ("failed", "Task was interrupted by a server restart. Use Retry to run it again.", "running"))
+        return cur.rowcount
+
+
+def set_active_agents(task_id: int, agents: list[str]):
+    active = ", ".join(dict.fromkeys(agents))
+    with connect() as db:
+        db.execute(_sql("UPDATE tasks SET active_agent=%s WHERE id=%s"), (active or None, task_id))
+
+
+def set_active_agent(task_id: int, agent: str | None):
+    set_active_agents(task_id, [agent] if agent else [])
 
 
 def add_message(task_id: int, agent: str, content: str):
