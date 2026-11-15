@@ -40,6 +40,39 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
             return None
 
 
+async def ask_model_with_recovery(task_id: int, agent: str, stage: str,
+                                  system_prompt: str, user_prompt: str,
+                                  max_recoveries: int = 3) -> str:
+    """Diagnose model-stage failures and retry with an adapted approach."""
+    recovery_notes = ""
+    last_error = None
+    for attempt in range(max_recoveries + 1):
+        if attempt:
+            report_progress(task_id, f"{stage} · Supervisor recovery {attempt}/{max_recoveries}", "supervisor")
+            add_message(task_id, "supervisor",
+                        f"RECOVERY: {stage} failed ({type(last_error).__name__}: {str(last_error)[:400]}). "
+                        f"Trying an adjusted approach, attempt {attempt}/{max_recoveries}.")
+            recovery_notes += (
+                f"\n\nRECOVERY CONTEXT: Previous attempt failed with "
+                f"{type(last_error).__name__}: {str(last_error)[:500]}. "
+                "Reassess the approach, correct the issue, simplify if needed, preserve completed work, "
+                "and produce the best valid result without claiming unperformed actions."
+            )
+            await asyncio.sleep(min(2 ** (attempt - 1), 12))
+        try:
+            return await ask_model(
+                system_prompt + " Act as a self-repairing agent: adapt methods, work around nonessential "
+                "obstacles, and continue toward the requested deliverable.",
+                user_prompt + recovery_notes,
+            )
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(
+        f"{stage} could not recover after {max_recoveries} supervisor-led repair attempts: "
+        f"{type(last_error).__name__}: {last_error}"
+    ) from last_error
+
+
 def report_progress(task_id: int, stage: str, agent: str = 'orchestrator') -> None:
     set_active_agent(task_id, agent)
     add_message(task_id, 'system', 'PROGRESS:' + stage)
@@ -319,7 +352,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                 "Do not claim external actions."
             )
             try:
-                output = await ask_model(
+                output = await ask_model_with_recovery(task_id, key, agent.name + " contribution", 
                     f"You are {agent.name}, specialist in {agent.role}. {agent.instruction} "
                     "You are text-only: do not execute external actions, access accounts, or claim to have done so.",
                     prompt,
@@ -342,21 +375,32 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
         results = await asyncio.gather(*(run_specialist(key) for key in specialist_keys))
         successful = [item for item in results if item["output"]]
         if not successful:
-            raise RuntimeError("All specialist agents failed after automatic retries.")
+            report_progress(task_id, "All specialists encountered errors · Supervisor is attempting team recovery", "supervisor")
+            failure_context = "\n\n".join(item["error"] or "No usable output" for item in results)
+            fallback = await ask_model_with_recovery(
+                task_id, "recovery_agent", "Fallback team recovery",
+                "You are the emergency recovery specialist. The original specialist team failed. "
+                "Independently complete the user's request as far as possible, using a simpler alternative "
+                "when needed. Be explicit about anything genuinely blocked and never invent external actions.",
+                f"Original goal:\n{goal}\n\nSpecialist failures:\n{failure_context}\n\n"
+                f"Available context:\n{tool_context}\n\nOrchestrator plan:\n{planner}",
+                max_recoveries=3,
+            )
+            successful = [{"key": "recovery_agent", "output": fallback, "error": None}]
 
         # Shared handoff gives each specialist's findings to the team coordinator and QA reviewer.
         team_context = "\n\n".join(
-            f"### {AGENTS[item['key']].name}\n{item['output']}" for item in successful
+            f"### {AGENTS[item['key']].name if item['key'] in AGENTS else 'Supervisor Recovery Agent'}\n{item['output']}" for item in successful
         )
         # Supervisor remains accountable after delegation: inspect every specialist outcome.
         report_progress(task_id, "Supervisor is monitoring agent results and checking for gaps", "supervisor")
         outcome_context = "\n\n".join(
-            f"### {AGENTS[item['key']].name} ({'SUCCESS' if item['output'] else 'FAILED'})\n"
+            f"### {AGENTS[item['key']].name if item['key'] in AGENTS else 'Supervisor Recovery Agent'} ({'SUCCESS' if item['output'] else 'FAILED'})\n"
             f"{item['output'] or item['error']}"
             for item in results
         )
         try:
-            handoff = await ask_model(
+            handoff = await ask_model_with_recovery(task_id, "supervisor", "Supervisor oversight", 
                 "You are the Supervisor Agent and accountable team lead. Review the original goal, "
                 "the dependency plan, and every specialist outcome. Identify missing requirements, "
                 "contradictions, weak assumptions, failed contributions, and checks QA must perform. "
@@ -375,7 +419,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
             add_message(task_id, "system", handoff)
 
         report_progress(task_id, "QA Reviewer is checking the combined result", "reviewer")
-        final = await ask_model(
+        final = await ask_model_with_recovery(task_id, "reviewer", "Final QA review", 
             "You are the QA Reviewer and final response editor. Follow the Supervisor oversight brief, verify its concerns against specialist work, and combine everything into one accurate, useful answer. "
             "Use the cross-agent handoff to resolve dependencies and contradictions. Correct unsupported claims, "
             "flag uncertainty, and never claim an external action was completed.",
