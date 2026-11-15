@@ -126,7 +126,7 @@ def resume_task_with_clarification(task_id: int, response: str) -> bool:
         cur = db.execute(_sql(
             "UPDATE tasks SET status=%s,user_message=user_message || %s,active_agent=NULL "
             "WHERE id=%s AND status=%s"
-        ), ("running", "\\n\\nUser clarification:\\n" + response, task_id, "needs_input"))
+        ), ("running", "\n\nUser clarification:\n" + response, task_id, "needs_input"))
         return cur.rowcount == 1
 
 
