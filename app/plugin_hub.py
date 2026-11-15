@@ -11,7 +11,17 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 import hmac
-\n\ndef require_auth(x_app_password: str | None = Header(default=None)):\n    expected = os.getenv("APP_PASSWORD", "")\n    if not expected:\n        raise HTTPException(503, "Dashboard password is not configured.")\n    if not x_app_password or not hmac.compare_digest(x_app_password, expected):\n        raise HTTPException(401, "Incorrect or missing dashboard password.")\n    return True
+
+
+def require_auth(x_app_password: str | None = Header(default=None)):
+    expected = os.getenv("APP_PASSWORD", "")
+    if not expected:
+        raise HTTPException(503, "Dashboard password is not configured.")
+    if not x_app_password or not hmac.compare_digest(x_app_password, expected):
+        raise HTTPException(401, "Incorrect or missing dashboard password.")
+    return True
+
+
 from .storage import connect, _sql
 
 router = APIRouter(prefix="/api/plugins/custom", tags=["custom-plugins"])
