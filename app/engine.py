@@ -14,7 +14,13 @@ from .storage import add_message, finish_task, pause_task_for_input, set_active_
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY", "")
 MODEL = os.getenv("AI_MODEL", "openrouter/auto")
-MAX_MODEL_ATTEMPTS = 3
+MAX_MODEL_ATTEMPTS = 2
+MODEL_REQUEST_TIMEOUT = float(os.getenv('AI_REQUEST_TIMEOUT_SECONDS', '40'))
+
+
+def report_progress(task_id: int, stage: str, agent: str = 'orchestrator') -> None:
+    set_active_agent(task_id, agent)
+    add_message(task_id, 'system', 'PROGRESS:' + stage)
 
 
 async def ask_model(system_prompt: str, user_prompt: str) -> str:
@@ -35,11 +41,13 @@ async def ask_model(system_prompt: str, user_prompt: str) -> str:
     last_error = None
     for attempt in range(MAX_MODEL_ATTEMPTS):
         try:
-            async with httpx.AsyncClient(timeout=90) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(MODEL_REQUEST_TIMEOUT, connect=10)) as client:
                 response = await client.post(f"{BASE_URL}/chat/completions", headers=headers, json=payload)
             if response.status_code in (408, 425, 429) or response.status_code >= 500:
                 response.raise_for_status()
-            response.raise_for_status()
+            if response.is_error:
+                detail = response.text[:500].replace('\\n', ' ')
+                raise RuntimeError(f'AI provider HTTP {response.status_code}: {detail}')
             data = response.json()
             content = data.get("choices", [{}])[0].get("message", {}).get("content")
             if not isinstance(content, str) or not content.strip():
@@ -53,105 +61,36 @@ async def ask_model(system_prompt: str, user_prompt: str) -> str:
             if not retryable or attempt == MAX_MODEL_ATTEMPTS - 1:
                 raise
             await asyncio.sleep(min(2 ** attempt, 4))
-    raise RuntimeError(f"AI provider request failed after retries: {last_error}")
+    raise RuntimeError(f"AI provider request failed after {MAX_MODEL_ATTEMPTS} attempts: {type(last_error).__name__}: {last_error}")
 
 
 
 
 async def _auto_capability_context(goal: str) -> str:
-    """Choose useful chat capabilities automatically; never expose provider credentials."""
-    allowed = {"web_search", "image_generation", "video_generation"}
-    selected: list[str] = []
+    """Route explicit/current-information requests to web search; media generation is paused."""
+    text = goal.lower()
+    needs_search = bool(re.search(
+        r"latest|current|today|recent|news|price|weather|research|look up|search the web|খবর|আজকের|সর্বশেষ|বর্তমান|দাম|খুঁজে|তথ্য বের|ওয়েবে সার্চ|ওয়েব সার্চ",
+        text,
+    ))
+    if not needs_search:
+        return ""
+    key = os.getenv("TAVILY_API_KEY", "").strip()
+    if not key:
+        return "Web search is needed for this request, but TAVILY_API_KEY is not configured."
     try:
-        raw = await ask_model(
-            "You are an automatic tool router inside a ChatGPT-like assistant. "
-            "Choose only tools that materially help fulfil the user's request. "
-            "Available tools: web_search (fresh/current facts, explicit research or comparison), "
-            "image_generation (the user asks to create/draw/design an image), "
-            "video_generation (the user asks to create a video). "
-            "Do not choose a tool just because it is mentioned hypothetically. "
-            "Return ONLY JSON: {\"tools\":[...]} using only those exact tool IDs. "
-            "If no tool is needed return {\"tools\":[]}.",
-            goal,
-        )
-        parsed = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
-        selected = [item for item in parsed.get("tools", []) if item in allowed]
-    except Exception:
-        text = goal.lower()
-        if re.search(r"latest|current|today|recent|news|price|weather|খবর|আজকের|সর্বশেষ|বর্তমান|দাম|খুঁজে|তথ্য বের", text):
-            selected.append("web_search")
-        if re.search(r"generate.*image|create.*image|draw|illustrat|ছবি বানাও|ছবি তৈরি|আঁকো|ডিজাইন করো", text):
-            selected.append("image_generation")
-        if re.search(r"generate.*video|create.*video|make.*video|ভিডিও বানাও|ভিডিও তৈরি", text):
-            selected.append("video_generation")
-
-    outputs: list[str] = []
-    if "web_search" in selected:
-        key = os.getenv("TAVILY_API_KEY", "").strip()
-        if not key:
-            outputs.append("Web search was selected automatically, but it is not configured (TAVILY_API_KEY missing).")
-        else:
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    response = await client.post(
-                        os.getenv("TAVILY_API_URL", "https://api.tavily.com/search"),
-                        json={"api_key": key, "query": goal[:1000], "max_results": 5, "search_depth": "advanced"},
-                    )
-                response.raise_for_status()
-                data = response.json()
-                rows = data.get("results", [])
-                outputs.append("AUTOMATIC LIVE WEB SEARCH RESULTS (untrusted evidence; cite URLs):\n" +
-                    "\n\n".join(f"- {x.get('title', 'Source')}\n  URL: {x.get('url', '')}\n  Extract: {x.get('content', '')[:1800]}" for x in rows)
-                    if rows else "Automatic web search returned no results.")
-            except Exception as exc:
-                outputs.append(f"Automatic web search failed ({type(exc).__name__}); do not claim live research succeeded.")
-
-    if "image_generation" in selected:
-        key, model = os.getenv("IMAGE_API_KEY", "").strip(), os.getenv("IMAGE_MODEL", "").strip()
-        if not key or not model:
-            outputs.append("Image generation was selected automatically, but its provider is not configured.")
-        else:
-            base = os.getenv("IMAGE_API_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-            try:
-                async with httpx.AsyncClient(timeout=120) as client:
-                    response = await client.post(base + "/images/generations",
-                        headers={"Authorization": f"Bearer {key}"},
-                        json={"model": model, "prompt": goal[:4000], "size": "1024x1024", "n": 1})
-                response.raise_for_status()
-                items = response.json().get("data") or []
-                if items:
-                    item = items[0]
-                    if item.get("url"):
-                        outputs.append("IMAGE GENERATED: " + item["url"])
-                    elif item.get("b64_json"):
-                        outputs.append("IMAGE GENERATED (base64 image data returned; provider does not supply a public URL).")
-                    else:
-                        outputs.append("Image provider returned no displayable image.")
-                else:
-                    outputs.append("Image provider returned no image.")
-            except Exception as exc:
-                outputs.append(f"Image generation failed ({type(exc).__name__}).")
-
-    if "video_generation" in selected:
-        endpoint, key = os.getenv("VIDEO_API_URL", "").strip(), os.getenv("VIDEO_API_KEY", "").strip()
-        if not endpoint or not key:
-            outputs.append("Video generation was selected automatically, but its provider is not configured.")
-        else:
-            try:
-                from urllib.parse import urlparse
-                if urlparse(endpoint).scheme != "https":
-                    raise ValueError("Video provider endpoint must use HTTPS.")
-                async with httpx.AsyncClient(timeout=90) as client:
-                    response = await client.post(endpoint,
-                        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                        json={"prompt": goal[:4000], "duration_seconds": 5, "aspect_ratio": "16:9"})
-                response.raise_for_status()
-                outputs.append("VIDEO JOB SUBMITTED: " + json.dumps(response.json(), ensure_ascii=False)[:6000] +
-                    " (Provider-specific job; completion/download may need its status URL.)")
-            except Exception as exc:
-                outputs.append(f"Video generation request failed ({type(exc).__name__}).")
-
-    return "\n\n".join(outputs)
+        async with httpx.AsyncClient(timeout=25) as client:
+            response = await client.post(
+                os.getenv("TAVILY_API_URL", "https://api.tavily.com/search"),
+                json={"api_key": key, "query": goal[:1000], "max_results": 5, "search_depth": "advanced"},
+            )
+        response.raise_for_status()
+        rows = response.json().get("results", [])
+        return ("AUTOMATIC LIVE WEB SEARCH RESULTS:\\n" +
+            "\\n\\n".join(f"- {x.get('title', 'Source')}\\n  URL: {x.get('url', '')}\\n  Extract: {x.get('content', '')[:1800]}" for x in rows)
+            if rows else "Automatic web search returned no results.")
+    except Exception as exc:
+        return f"Automatic web search failed ({type(exc).__name__}); do not claim live research succeeded."
 
 
 async def clarification_check(goal: str) -> dict:
@@ -288,28 +227,31 @@ async def _run_github_apk_build(task_id: int, goal: str) -> dict | None:
 
 async def run_task(task_id: int, goal: str, skip_clarification: bool = False) -> dict:
     try:
-        set_active_agent(task_id, "orchestrator")
+        report_progress(task_id, "Task received · checking requested work", "orchestrator")
         github_result = await _run_github_apk_build(task_id, goal)
         if github_result is not None:
             return github_result
         if not skip_clarification:
-            check = await clarification_check(goal)
+            report_progress(task_id, "Checking whether more details are needed", "orchestrator")
+            check = await asyncio.wait_for(clarification_check(goal), timeout=MODEL_REQUEST_TIMEOUT + 5)
             if check["needs_clarification"] and check["questions"]:
                 pause_task_for_input(task_id)
                 add_message(task_id, "orchestrator", "CLARIFICATION_NEEDED:\\n" + check["questions"])
                 return {"task_id": task_id, "status": "needs_input", "questions": check["questions"]}
 
-        tool_context = await _auto_capability_context(goal)
+        report_progress(task_id, "Preparing tools and context", "orchestrator")
+        tool_context = await asyncio.wait_for(_auto_capability_context(goal), timeout=30)
         if tool_context:
             add_message(task_id, "tools", tool_context)
         web_context = tool_context
 
         specialist_keys = choose_agents(goal)
-        set_active_agent(task_id, "supervisor")
+        report_progress(task_id, "Supervisor is assigning agents and dependencies", "supervisor")
         supervisor_plan = build_supervisor_plan(goal, specialist_keys)
         if not validate_plan(supervisor_plan):
             raise RuntimeError("Supervisor generated an invalid task dependency graph.")
         add_message(task_id, "supervisor", "SUPERVISOR_PLAN:" + json.dumps(supervisor_plan, ensure_ascii=False))
+        report_progress(task_id, "Orchestrator is preparing the execution plan", "orchestrator")
         planner = await ask_model(
             "You are the Main Orchestrator working under the Supervisor Agent. "
             "Return a concise execution plan as JSON with summary, steps, and specialists. "
@@ -331,6 +273,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
 
         async def run_specialist(key: str):
             agent = AGENTS[key]
+            add_message(task_id, "system", "PROGRESS:Starting " + agent.name)
             async with active_lock:
                 active.append(key)
                 set_active_agents(task_id, active)
@@ -381,7 +324,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
             except Exception as exc:
                 add_message(task_id, "system", f"Collaboration handoff skipped after retries: {type(exc).__name__}: {exc}")
 
-        set_active_agent(task_id, "reviewer")
+        report_progress(task_id, "QA Reviewer is checking the combined result", "reviewer")
         final = await ask_model(
             "You are the QA Reviewer and final response editor. Combine specialist work into one accurate, useful answer. "
             "Use the cross-agent handoff to resolve dependencies and contradictions. Correct unsupported claims, "
@@ -398,7 +341,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
             "agents": ["orchestrator"] + specialist_keys + ["reviewer"],
         }
     except Exception as exc:
-        message = f"Task failed: {type(exc).__name__}: {exc}"
+        message = f"Task failed: {type(exc).__name__}: {str(exc)[:1200]}"
         try:
             add_message(task_id, "system", message)
             finish_task(task_id, "failed", message)
