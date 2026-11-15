@@ -14,7 +14,8 @@ A separate multi-agent assistant with a Main Orchestrator, specialist agents, ta
 - SQLite for local development; PostgreSQL/Supabase for durable hosted history.
 - Responsive web dashboard and JSON API.
 - OpenAI-compatible model endpoint (OpenRouter by default).
-- GitHub plugin: list repository workflows, trigger explicitly approved `workflow_dispatch` runs, monitor build status, and download workflow artifacts.
+- GitHub plugin: list repository workflows, trigger explicitly approved `workflow_dispatch` runs from the dashboard, monitor build status, and download workflow artifacts.
+- The orchestrator can also dispatch an Android/APK workflow when the user explicitly requests an APK build and supplies a GitHub repository; it asks for missing repository/workflow details first.
 - Password-protected dashboard and task APIs; fails closed until APP_PASSWORD is configured.
 
 ## Database configuration
