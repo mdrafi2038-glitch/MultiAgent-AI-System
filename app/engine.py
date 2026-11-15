@@ -386,7 +386,9 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                 f"Available context:\n{tool_context}\n\nOrchestrator plan:\n{planner}",
                 max_recoveries=3,
             )
-            successful = [{"key": "recovery_agent", "output": fallback, "error": None}]
+            recovery_result = {"key": "recovery_agent", "output": fallback, "error": None}
+            successful = [recovery_result]
+            results.append(recovery_result)
 
         # Shared handoff gives each specialist's findings to the team coordinator and QA reviewer.
         team_context = "\n\n".join(
