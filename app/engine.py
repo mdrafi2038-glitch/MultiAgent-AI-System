@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 
 import httpx
@@ -6,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from .agents import AGENTS, choose_agents
-from .storage import add_message, finish_task, set_active_agent, set_active_agents
+from .storage import add_message, finish_task, pause_task_for_input, set_active_agent, set_active_agents
 
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY", "")
@@ -53,9 +54,43 @@ async def ask_model(system_prompt: str, user_prompt: str) -> str:
     raise RuntimeError(f"AI provider request failed after retries: {last_error}")
 
 
-async def run_task(task_id: int, goal: str) -> dict:
+async def clarification_check(goal: str) -> dict:
+    """Decide whether essential requirements are missing before specialist work starts."""
+    raw = await ask_model(
+        "You are a requirements analyst for a helpful multi-agent assistant. "
+        "Decide whether the user's request is clear enough to begin useful work. "
+        "Ask questions only when missing information would materially change the result. "
+        "For app/software requests, consider purpose, target platform, core features, design, "
+        "and expected deliverables, but do not ask for details already stated or safe to assume. "
+        "Ask at most 5 concise, specific questions in one grouped message. "
+        "If the request is sufficiently clear, return no questions. "
+        "Match the user's language (Bengali/Banglish/English). "
+        "Return ONLY valid JSON: "
+        '{"needs_clarification":true|false,"questions":"one user-facing message or empty string","reason":"brief reason"}.',
+        goal,
+    )
+    try:
+        start, end = raw.find("{"), raw.rfind("}")
+        parsed = json.loads(raw[start:end + 1]) if start >= 0 and end > start else {}
+        return {
+            "needs_clarification": bool(parsed.get("needs_clarification")),
+            "questions": str(parsed.get("questions") or "").strip(),
+        }
+    except (json.JSONDecodeError, TypeError, ValueError):
+        # If the provider does not follow the JSON contract, don't block the task.
+        return {"needs_clarification": False, "questions": ""}
+
+
+async def run_task(task_id: int, goal: str, skip_clarification: bool = False) -> dict:
     try:
         set_active_agent(task_id, "orchestrator")
+        if not skip_clarification:
+            check = await clarification_check(goal)
+            if check["needs_clarification"] and check["questions"]:
+                pause_task_for_input(task_id)
+                add_message(task_id, "orchestrator", "CLARIFICATION_NEEDED:\\n" + check["questions"])
+                return {"task_id": task_id, "status": "needs_input", "questions": check["questions"]}
+
         planner = await ask_model(
             "You are the Main Orchestrator. Return a concise execution plan as JSON with summary, steps, and specialists. "
             "Delegate only text work. Do not use tools or claim external actions.",
