@@ -13,7 +13,7 @@ from .engine import run_task
 from .agents import AGENTS
 
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
-app = FastAPI(title="MultiAgent AI System", version="0.3.0")
+app = FastAPI(title="MultiAgent AI System", version="0.4.0")
 
 @app.on_event("startup")
 def startup():
@@ -35,7 +35,9 @@ def health():
 
 @app.get("/api/agents")
 def agents(_: bool = Depends(require_auth)):
-    return [{"id": a.key, "name": a.name, "role": a.role} for a in AGENTS.values()]
+    team = [{"id": "orchestrator", "name": "Main Orchestrator", "role": "Task coordination"}]
+    team.extend([{"id": a.key, "name": a.name, "role": a.role} for a in AGENTS.values()])
+    return team
 
 @app.get("/api/tasks")
 def tasks(_: bool = Depends(require_auth)):
