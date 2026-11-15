@@ -348,27 +348,39 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
         team_context = "\n\n".join(
             f"### {AGENTS[item['key']].name}\n{item['output']}" for item in successful
         )
-        handoff = ""
-        if len(successful) > 1:
-            try:
-                set_active_agent(task_id, "orchestrator")
-                handoff = await ask_model(
-                    "You are the Agent Collaboration Coordinator. Compare all specialist contributions. "
-                    "Create a concise shared handoff identifying useful cross-agent findings, dependencies, "
-                    "contradictions, and gaps. Do not write the final user answer.",
-                    f"Original goal:\n{goal}\n\nAutomatically selected tool results:\n{tool_context}\n\nSpecialist contributions:\n{team_context}",
-                )
-                add_message(task_id, "orchestrator", "Agent-to-agent collaboration handoff:\n" + handoff)
-            except Exception as exc:
-                add_message(task_id, "system", f"Collaboration handoff skipped after retries: {type(exc).__name__}: {exc}")
+        # Supervisor remains accountable after delegation: inspect every specialist outcome.
+        report_progress(task_id, "Supervisor is monitoring agent results and checking for gaps", "supervisor")
+        outcome_context = "\n\n".join(
+            f"### {AGENTS[item['key']].name} ({'SUCCESS' if item['output'] else 'FAILED'})\n"
+            f"{item['output'] or item['error']}"
+            for item in results
+        )
+        try:
+            handoff = await ask_model(
+                "You are the Supervisor Agent and accountable team lead. Review the original goal, "
+                "the dependency plan, and every specialist outcome. Identify missing requirements, "
+                "contradictions, weak assumptions, failed contributions, and checks QA must perform. "
+                "Give the QA Reviewer concrete verification steps and state unresolved gaps. "
+                "Do not claim external actions occurred or invent missing results.",
+                f"Original goal:\n{goal}\n\nDependency plan:\n"
+                f"{json.dumps(supervisor_plan, ensure_ascii=False)}\n\n"
+                f"Orchestrator plan:\n{planner}\n\nSpecialist outcomes:\n{outcome_context}",
+            )
+            add_message(task_id, "supervisor", "SUPERVISOR_OVERSIGHT:\n" + handoff)
+        except Exception as exc:
+            handoff = (
+                "Supervisor oversight model call failed after retries: "
+                f"{type(exc).__name__}: {str(exc)[:500]}. QA must independently inspect all specialist outcomes."
+            )
+            add_message(task_id, "system", handoff)
 
         report_progress(task_id, "QA Reviewer is checking the combined result", "reviewer")
         final = await ask_model(
-            "You are the QA Reviewer and final response editor. Combine specialist work into one accurate, useful answer. "
+            "You are the QA Reviewer and final response editor. Follow the Supervisor oversight brief, verify its concerns against specialist work, and combine everything into one accurate, useful answer. "
             "Use the cross-agent handoff to resolve dependencies and contradictions. Correct unsupported claims, "
             "flag uncertainty, and never claim an external action was completed.",
             f"Original request:\n{goal}\n\nAutomatically selected tool results:\n{tool_context}\n\nSpecialist work:\n{team_context}\n\n"
-            f"Cross-agent handoff:\n{handoff or 'No separate handoff was available.'}",
+            f"Supervisor oversight and QA instructions:\n{handoff or 'No supervisor oversight brief was available.'}",
         )
         add_message(task_id, "reviewer", final)
         finish_task(task_id, "completed", final)
@@ -376,7 +388,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
             "task_id": task_id,
             "status": "completed",
             "result": final,
-            "agents": ["orchestrator"] + specialist_keys + ["reviewer"],
+            "agents": ["supervisor", "orchestrator"] + specialist_keys + ["reviewer"],
         }
     except Exception as exc:
         message = f"Task failed: {type(exc).__name__}: {str(exc)[:1200]}"
