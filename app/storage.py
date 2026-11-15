@@ -117,7 +117,7 @@ def get_task(task_id: int):
 def restart_task(task_id: int) -> bool:
     with connect() as db:
         cur = db.execute(_sql("UPDATE tasks SET status=%s,result=NULL,active_agent=NULL WHERE id=%s AND status=%s"),
-                         ("running", None, task_id, "failed"))
+                         ("running", task_id, "failed"))
         return cur.rowcount == 1
 
 
