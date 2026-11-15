@@ -326,7 +326,9 @@ async def browser_automation(body: BrowserRequest, _: bool = Depends(require_aut
         raise HTTPException(409, "This browser task may change website data. Explicit approval is required.")
     target = _check_public_url(body.url)
     for action in body.actions:
-        if action.action == "goto" and action.value:
+        if action.action == "goto":
+            if not action.value:
+                raise HTTPException(400, "goto requires a URL value.")
             _check_public_url(action.value)
         if action.action in {"click", "fill", "select"} and not action.selector:
             raise HTTPException(400, f"{action.action} requires a selector.")
