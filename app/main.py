@@ -69,7 +69,7 @@ def health():
 
 @app.get("/api/agents")
 def agents(_: bool = Depends(require_auth)):
-    team = [{"id": "orchestrator", "name": "Main Orchestrator", "role": "Task coordination and cross-agent handoff"}]
+    team = [{"id": "supervisor", "name": "Supervisor Agent", "role": "Dependency planning, tool routing and approval control"}, {"id": "orchestrator", "name": "Main Orchestrator", "role": "Task coordination and cross-agent handoff"}, {"id": "github_agent", "name": "GitHub Agent", "role": "Repository and workflow integration (adapter-gated)"}, {"id": "render_agent", "name": "Render Agent", "role": "Hosting, logs and deployment integration (approval-gated)"}, {"id": "integration_agent", "name": "API Integration Agent", "role": "Configured API plugin integration (approval-gated)"}]
     team.extend([{"id": a.key, "name": a.name, "role": a.role} for a in AGENTS.values()])
     return team
 

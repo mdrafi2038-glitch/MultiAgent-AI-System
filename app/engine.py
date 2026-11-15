@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from .agents import AGENTS, choose_agents
+from .supervisor import build_supervisor_plan, validate_plan
 from .storage import add_message, finish_task, pause_task_for_input, set_active_agent, set_active_agents
 
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
@@ -200,17 +201,27 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                 add_message(task_id, "orchestrator", "CLARIFICATION_NEEDED:\\n" + check["questions"])
                 return {"task_id": task_id, "status": "needs_input", "questions": check["questions"]}
 
+        specialist_keys = choose_agents(goal)
+        set_active_agent(task_id, "supervisor")
+        supervisor_plan = build_supervisor_plan(goal, specialist_keys)
+        if not validate_plan(supervisor_plan):
+            raise RuntimeError("Supervisor generated an invalid task dependency graph.")
+        add_message(task_id, "supervisor", "SUPERVISOR_PLAN:" + json.dumps(supervisor_plan, ensure_ascii=False))
         planner = await ask_model(
-            "You are the Main Orchestrator. Return a concise execution plan as JSON with summary, steps, and specialists. "
-            "Delegate only text work. Do not use tools or claim external actions.",
-            goal,
+            "You are the Main Orchestrator working under the Supervisor Agent. "
+            "Return a concise execution plan as JSON with summary, steps, and specialists. "
+            "Respect the supplied dependency graph and approval gates. "
+            "Delegate only text work unless a real integration adapter is explicitly available. "
+            "Never claim external actions were executed.",
+            "User goal:\\n" + goal + "\\n\\nSupervisor dependency plan:\\n" +
+            json.dumps(supervisor_plan, ensure_ascii=False),
         )
         add_message(task_id, "orchestrator", planner)
 
-        specialist_keys = choose_agents(goal)
         # Publish the selected team before execution so the dashboard can show
         # every assigned specialist as IN QUEUE until it actually starts.
-        add_message(task_id, "system", "AGENTS_SELECTED:" + ",".join(specialist_keys + ["reviewer"]))
+        planned_agents = ["supervisor"] + (["github_agent"] if "github" in supervisor_plan["integrations"] else []) + (["render_agent"] if "render" in supervisor_plan["integrations"] else []) + (["integration_agent"] if "api_plugin" in supervisor_plan["integrations"] else [])
+        add_message(task_id, "system", "AGENTS_SELECTED:" + ",".join(planned_agents + specialist_keys + ["reviewer"]))
         active = []
         set_active_agents(task_id, active)
         active_lock = asyncio.Lock()
