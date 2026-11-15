@@ -2,6 +2,9 @@ import asyncio
 import json
 import os
 import re
+import random
+import time
+from datetime import datetime, timezone
 
 import httpx
 from dotenv import load_dotenv
@@ -14,8 +17,27 @@ from .storage import add_message, finish_task, pause_task_for_input, set_active_
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY", "")
 MODEL = os.getenv("AI_MODEL", "openrouter/auto")
-MAX_MODEL_ATTEMPTS = 2
+MAX_MODEL_ATTEMPTS = int(os.getenv("AI_MAX_MODEL_ATTEMPTS", "5"))
 MODEL_REQUEST_TIMEOUT = float(os.getenv('AI_REQUEST_TIMEOUT_SECONDS', '40'))
+MODEL_REQUEST_CONCURRENCY = max(1, int(os.getenv("AI_REQUEST_CONCURRENCY", "1")))
+MODEL_MIN_REQUEST_INTERVAL = max(0.0, float(os.getenv("AI_MIN_REQUEST_INTERVAL_SECONDS", "1.5")))
+_MODEL_REQUEST_SEMAPHORE = asyncio.Semaphore(MODEL_REQUEST_CONCURRENCY)
+_MODEL_REQUEST_LOCK = asyncio.Lock()
+_MODEL_LAST_REQUEST_AT = 0.0
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            target = datetime.strptime(value, "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
+            return max(0.0, (target - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError):
+            return None
 
 
 def report_progress(task_id: int, stage: str, agent: str = 'orchestrator') -> None:
@@ -24,6 +46,7 @@ def report_progress(task_id: int, stage: str, agent: str = 'orchestrator') -> No
 
 
 async def ask_model(system_prompt: str, user_prompt: str) -> str:
+    global _MODEL_LAST_REQUEST_AT
     if not API_KEY:
         raise RuntimeError("OPENROUTER_API_KEY (or OPENAI_API_KEY) is not configured.")
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
@@ -39,30 +62,42 @@ async def ask_model(system_prompt: str, user_prompt: str) -> str:
         ],
     }
     last_error = None
-    for attempt in range(MAX_MODEL_ATTEMPTS):
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(MODEL_REQUEST_TIMEOUT, connect=10)) as client:
-                response = await client.post(f"{BASE_URL}/chat/completions", headers=headers, json=payload)
-            if response.status_code in (408, 425, 429) or response.status_code >= 500:
-                response.raise_for_status()
-            if response.is_error:
-                detail = response.text[:500].replace('\\n', ' ')
-                raise RuntimeError(f'AI provider HTTP {response.status_code}: {detail}')
-            data = response.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content")
-            if not isinstance(content, str) or not content.strip():
-                raise RuntimeError("AI provider returned an empty or unsupported response.")
-            return content.strip()
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
-            last_error = exc
-            retryable = not isinstance(exc, httpx.HTTPStatusError) or (
-                exc.response.status_code in (408, 425, 429) or exc.response.status_code >= 500
-            )
-            if not retryable or attempt == MAX_MODEL_ATTEMPTS - 1:
-                raise
-            await asyncio.sleep(min(2 ** attempt, 4))
+    async with _MODEL_REQUEST_SEMAPHORE:
+        for attempt in range(MAX_MODEL_ATTEMPTS):
+            try:
+                async with _MODEL_REQUEST_LOCK:
+                    now = time.monotonic()
+                    wait_for_slot = MODEL_MIN_REQUEST_INTERVAL - (now - _MODEL_LAST_REQUEST_AT)
+                    if wait_for_slot > 0:
+                        await asyncio.sleep(wait_for_slot)
+                    _MODEL_LAST_REQUEST_AT = time.monotonic()
+                async with httpx.AsyncClient(timeout=httpx.Timeout(MODEL_REQUEST_TIMEOUT, connect=10)) as client:
+                    response = await client.post(f"{BASE_URL}/chat/completions", headers=headers, json=payload)
+                if response.is_error:
+                    if response.status_code in (408, 425, 429) or response.status_code >= 500:
+                        response.raise_for_status()
+                    detail = response.text[:500].replace("\\n", " ")
+                    raise RuntimeError(f"AI provider HTTP {response.status_code}: {detail}")
+                data = response.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content")
+                if not isinstance(content, str) or not content.strip():
+                    raise RuntimeError("AI provider returned an empty or unsupported response.")
+                return content.strip()
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
+                last_error = exc
+                retryable = not isinstance(exc, httpx.HTTPStatusError) or (
+                    exc.response.status_code in (408, 425, 429) or exc.response.status_code >= 500
+                )
+                if not retryable or attempt == MAX_MODEL_ATTEMPTS - 1:
+                    raise
+                retry_after = (
+                    _retry_after_seconds(exc.response)
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+                    else None
+                )
+                delay = retry_after if retry_after is not None else min(2 ** attempt, 30)
+                await asyncio.sleep(min(delay + random.uniform(0.1, 0.8), 90))
     raise RuntimeError(f"AI provider request failed after {MAX_MODEL_ATTEMPTS} attempts: {type(last_error).__name__}: {last_error}")
-
 
 
 
