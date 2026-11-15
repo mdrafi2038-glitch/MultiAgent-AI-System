@@ -114,6 +114,22 @@ def get_task(task_id: int):
         return dict(row) if row else None
 
 
+
+def pause_task_for_input(task_id: int):
+    with connect() as db:
+        db.execute(_sql("UPDATE tasks SET status=%s,active_agent=NULL WHERE id=%s"),
+                   ("needs_input", task_id))
+
+
+def resume_task_with_clarification(task_id: int, response: str) -> bool:
+    with connect() as db:
+        cur = db.execute(_sql(
+            "UPDATE tasks SET status=%s,user_message=user_message || %s,active_agent=NULL "
+            "WHERE id=%s AND status=%s"
+        ), ("running", "\n\nUser clarification:\n" + response, task_id, "needs_input"))
+        return cur.rowcount == 1
+
+
 def restart_task(task_id: int) -> bool:
     with connect() as db:
         cur = db.execute(_sql("UPDATE tasks SET status=%s,result=NULL,active_agent=NULL WHERE id=%s AND status=%s"),
