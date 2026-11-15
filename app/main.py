@@ -3,11 +3,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from .storage import init_db, create_task, recent_tasks, task_messages
 from .engine import run_task
 from .agents import AGENTS
 
-load_dotenv()
 app = FastAPI(title="MultiAgent AI System", version="0.1.0")
 
 @app.on_event("startup")
