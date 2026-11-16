@@ -105,3 +105,74 @@ async def deploy_render_service() -> dict:
         return {"state": "failed", "integration": "render", "reason": f"Render rejected deployment with HTTP {exc.response.status_code}."}
     except httpx.HTTPError as exc:
         return {"state": "failed", "integration": "render", "reason": f"Render deployment request failed: {type(exc).__name__}."}
+
+
+def _github_repository_from_text(goal: str) -> str | None:
+    import re
+
+    match = re.search(r"github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", goal, re.IGNORECASE)
+    if match:
+        return f"{match.group(1)}/{match.group(2).removesuffix('.git')}"
+    match = re.search(r"(?:repo(?:sitory)?\\s*[:=]?\\s*)([A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100})", goal, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+async def inspect_github_repository(goal: str) -> dict:
+    """Read repository metadata, workflows and recent runs; never writes to GitHub."""
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    repository = _github_repository_from_text(goal)
+    if not token:
+        return {"state": "blocked", "integration": "github", "reason": "GITHUB_TOKEN is not configured."}
+    if not repository:
+        return {"state": "blocked", "integration": "github", "reason": "Please include a GitHub repository URL or owner/repository name."}
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}", repository):
+        return {"state": "blocked", "integration": "github", "reason": "Repository name is invalid."}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            base = f"https://api.github.com/repos/{repository}"
+            repo_response = await client.get(base, headers=headers)
+            repo_response.raise_for_status()
+            repo_data = repo_response.json()
+            workflows_response = await client.get(base + "/actions/workflows", headers=headers, params={"per_page": 30})
+            workflows_response.raise_for_status()
+            runs_response = await client.get(base + "/actions/runs", headers=headers, params={"per_page": 5})
+            runs_response.raise_for_status()
+        workflows = workflows_response.json().get("workflows", [])
+        runs = runs_response.json().get("workflow_runs", [])
+        latest = runs[0] if runs else {}
+        return {
+            "state": "completed",
+            "integration": "github",
+            "repository": repository,
+            "default_branch": repo_data.get("default_branch"),
+            "private": repo_data.get("private"),
+            "description": repo_data.get("description"),
+            "html_url": repo_data.get("html_url"),
+            "workflow_count": len(workflows),
+            "workflows": [
+                {"name": item.get("name"), "path": item.get("path"), "state": item.get("state")}
+                for item in workflows[:15]
+            ],
+            "latest_workflow_run": {
+                "name": latest.get("name"),
+                "status": latest.get("status"),
+                "conclusion": latest.get("conclusion"),
+                "branch": latest.get("head_branch"),
+                "html_url": latest.get("html_url"),
+            } if latest else None,
+        }
+    except httpx.HTTPStatusError as exc:
+        return {
+            "state": "blocked",
+            "integration": "github",
+            "repository": repository,
+            "reason": f"GitHub API returned HTTP {exc.response.status_code}. Check token scope and repository access.",
+        }
+    except httpx.HTTPError as exc:
+        return {"state": "blocked", "integration": "github", "repository": repository, "reason": f"GitHub connection failed: {type(exc).__name__}."}
