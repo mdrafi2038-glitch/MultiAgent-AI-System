@@ -345,6 +345,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
         if not validate_plan(supervisor_plan):
             raise RuntimeError("Supervisor generated an invalid task dependency graph.")
         add_message(task_id, "supervisor", "SUPERVISOR_PLAN:" + json.dumps(supervisor_plan, ensure_ascii=False))
+        add_message(task_id, "system", "AGENT_COMPLETED:supervisor")
         report_progress(task_id, "Orchestrator is preparing the execution plan", "orchestrator")
         planner = await ask_model_with_recovery(
             task_id, "orchestrator", "Orchestrator planning",
@@ -357,6 +358,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
             json.dumps(supervisor_plan, ensure_ascii=False),
         )
         add_message(task_id, "orchestrator", planner)
+        add_message(task_id, "system", "AGENT_COMPLETED:orchestrator")
 
         # Publish the selected team before execution so the dashboard can show
         # every assigned specialist as IN QUEUE until it actually starts.
@@ -385,10 +387,12 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                     prompt,
                 )
                 add_message(task_id, key, output)
+                add_message(task_id, "system", "AGENT_COMPLETED:" + key)
                 return {"key": key, "output": output, "error": None}
             except Exception as exc:
                 note = f"{agent.name} could not complete its part after automatic retries: {type(exc).__name__}: {exc}"
                 add_message(task_id, key, note)
+                add_message(task_id, "system", "AGENT_FAILED:" + key)
                 return {"key": key, "output": None, "error": note}
             finally:
                 async with active_lock:
@@ -396,10 +400,11 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                         active.remove(key)
                     set_active_agents(task_id, active)
 
-        # Hybrid execution: independent specialist contributions run concurrently.
-        # The coordinator handoff and QA review remain sequential after all specialists finish.
-        # This gives parallel speed without skipping dependency integration or final review.
-        results = await asyncio.gather(*(run_specialist(key) for key in specialist_keys))
+        # Execute specialists in Supervisor queue order. Only one specialist is active
+        # at a time; all remaining selected specialists stay visibly IN QUEUE.
+        results = []
+        for key in specialist_keys:
+            results.append(await run_specialist(key))
         successful = [item for item in results if item["output"]]
         if not successful:
             report_progress(task_id, "All specialists encountered errors · Supervisor is attempting team recovery", "supervisor")
@@ -440,6 +445,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                 f"Orchestrator plan:\n{planner}\n\nSpecialist outcomes:\n{outcome_context}",
             )
             add_message(task_id, "supervisor", "SUPERVISOR_OVERSIGHT:\n" + handoff)
+            add_message(task_id, "system", "AGENT_COMPLETED:supervisor")
         except Exception as exc:
             handoff = (
                 "Supervisor oversight model call failed after retries: "
@@ -456,6 +462,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
             f"Supervisor oversight and QA instructions:\n{handoff or 'No supervisor oversight brief was available.'}",
         )
         add_message(task_id, "reviewer", final)
+        add_message(task_id, "system", "AGENT_COMPLETED:reviewer")
         finish_task(task_id, "completed", final)
         return {
             "task_id": task_id,
