@@ -34,6 +34,7 @@ from .storage import (
 from .engine import run_task, ask_model
 from .agents import AGENTS
 from .plugin_hub import router as custom_plugins_router, chat_plugin_catalog, run_chat_plugin_action
+from .plugin_connections import router as plugin_connections_router, get_credential
 from .capabilities import router as capabilities_router
 
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
@@ -41,6 +42,7 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 GITHUB_API = "https://api.github.com"
 app = FastAPI(title="MultiAgent AI System", version="0.7.0")
 app.include_router(custom_plugins_router)
+app.include_router(plugin_connections_router)
 app.include_router(capabilities_router)
 
 
@@ -423,10 +425,11 @@ async def retry_task(task_id: int, background_tasks: BackgroundTasks, _: bool = 
 
 
 def github_headers():
-    if not GITHUB_TOKEN:
-        raise HTTPException(status_code=503, detail="GitHub plugin is not connected. Add GITHUB_TOKEN in the Render service Environment settings.")
+    token = get_credential("github") or GITHUB_TOKEN
+    if not token:
+        raise HTTPException(status_code=503, detail="GitHub plugin is not connected. Select Connect in Plugins and add a GitHub token.")
     return {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
@@ -461,7 +464,7 @@ def plugins(_: bool = Depends(require_auth)):
                 "id": "github",
                 "name": "GitHub",
                 "description": "Browse repositories, trigger GitHub Actions workflows, monitor builds, and retrieve build artifacts.",
-                "connected": bool(GITHUB_TOKEN),
+                "connected": bool(get_credential("github") or GITHUB_TOKEN),
                 "capabilities": ["repositories", "workflows", "workflow_dispatch", "build_status", "artifacts"],
             }
         ]
