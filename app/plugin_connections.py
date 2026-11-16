@@ -156,7 +156,7 @@ async def connect_plugin(plugin_id: str, body: ConnectRequest, _: bool = Depends
 @router.delete("/{plugin_id}/connection")
 def disconnect_plugin(plugin_id: str, _: bool = Depends(require_auth)):
     with connect() as db:
-        db.execute(_sql("DELETE FROM plugin_connections WHERE plugin_id=%s"), (plugin_id,))
+        db.execute(_sql("UPDATE plugin_connections SET credential_encrypted=%s,status=%s,updated_at=%s WHERE plugin_id=%s"), (None, "disconnected", datetime.now(timezone.utc).isoformat(), plugin_id))
         if plugin_id != "github":
             db.execute(_sql("UPDATE custom_plugins SET enabled=%s WHERE id=%s"), (False, plugin_id))
     return {"disconnected": True, "plugin_id": plugin_id, "message": "Integration disconnected. Its setup is kept so you can reconnect later."}
