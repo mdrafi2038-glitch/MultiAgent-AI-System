@@ -208,7 +208,7 @@ def create_custom_plugin(body: CustomPluginCreate, _: bool = Depends(require_aut
     with connect() as db:
         try:
             db.execute(_sql("INSERT INTO custom_plugins(id,name,description,base_url,auth_env,actions_json,enabled,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)"),
-                (plugin_id, body.name.strip(), body.description.strip(), base_url, auth_env, json.dumps(actions), True, __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()))
+                (plugin_id, body.name.strip(), body.description.strip(), base_url, auth_env, json.dumps(actions), False, __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()))
         except Exception as exc:
             if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
                 raise HTTPException(409, "A plugin with this id already exists.") from exc
@@ -300,9 +300,9 @@ async def run_chat_plugin_action(plugin_id: str, action_id: str, params=None, bo
     base = _public_https_url(plugin["base_url"]); target = base + action["path"]
     if urlparse(target).hostname != urlparse(base).hostname: raise HTTPException(400, "Action URL must stay on the plugin's configured host.")
     headers = {"Accept": "application/json"}; env_name = plugin.get("auth_env")
-    if env_name:
-        token = os.getenv(env_name, "").strip()
-        if not token: raise HTTPException(503, "Plugin credential is not configured on the host.")
+    token = get_credential(plugin_id) or (os.getenv(env_name, "").strip() if env_name else "")
+    if env_name and not token: raise HTTPException(503, "Plugin credential is not connected. Reconnect this integration.")
+    if token:
         if get_auth_type(plugin_id) == "api_key":
             headers["X-API-Key"] = token
         else:
