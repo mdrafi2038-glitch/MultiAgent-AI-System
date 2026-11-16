@@ -27,6 +27,8 @@ from .storage import (
     conversation_messages,
     add_conversation_message,
     get_conversation,
+    task_artifacts,
+    get_task_artifact,
 )
 from .engine import run_task, ask_model
 from .agents import AGENTS
@@ -98,6 +100,30 @@ def task_detail(task_id: int, _: bool = Depends(require_auth)):
     if not found:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"task": found, "messages": task_messages(task_id)}
+
+
+@app.get("/api/tasks/{task_id}/artifacts")
+def task_artifact_list(task_id: int, _: bool = Depends(require_auth)):
+    if not get_task(task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"artifacts": [
+        {**item, "download_url": f"/api/tasks/{task_id}/artifacts/{item['id']}/download"}
+        for item in task_artifacts(task_id)
+    ]}
+
+
+@app.get("/api/tasks/{task_id}/artifacts/{artifact_id}/download")
+def download_task_artifact(task_id: int, artifact_id: int, _: bool = Depends(require_auth)):
+    if not get_task(task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    artifact = get_task_artifact(task_id, artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Project file not found")
+    from fastapi.responses import Response
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", artifact["filename"])[:120]
+    return Response(content=bytes(artifact["content"]), media_type=artifact["mime_type"],
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"',
+                 "Content-Length": str(artifact["size_bytes"])})
 
 
 @app.get("/api/conversations")
