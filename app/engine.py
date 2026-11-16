@@ -341,6 +341,10 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
         web_context = tool_context
 
         specialist_keys = choose_agents(goal)
+        software_request = bool(re.search(
+            r"\b(app|application|website|web app|software|android|apk|mobile app|frontend|backend)\b|অ্যাপ|ওয়েবসাইট|সফটওয়্যার|মোবাইল অ্যাপ|ওয়েব অ্যাপ",
+            goal, re.IGNORECASE,
+        ))
         report_progress(task_id, "Supervisor is assigning agents and dependencies", "supervisor")
         supervisor_plan = build_supervisor_plan(goal, specialist_keys)
         if not validate_plan(supervisor_plan):
@@ -364,7 +368,7 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
         # Publish the selected team before execution so the dashboard can show
         # every assigned specialist as IN QUEUE until it actually starts.
         planned_agents = ["supervisor", "orchestrator"] + (["github_agent"] if "github" in supervisor_plan["integrations"] else []) + (["render_agent"] if "render" in supervisor_plan["integrations"] else []) + (["integration_agent"] if "api_plugin" in supervisor_plan["integrations"] else [])
-        add_message(task_id, "system", "AGENTS_SELECTED:" + ",".join(planned_agents + specialist_keys + ["reviewer"]))
+        add_message(task_id, "system", "AGENTS_SELECTED:" + ",".join(planned_agents + specialist_keys + (["project_builder"] if software_request else []) + ["reviewer"]))
         active = []
         set_active_agents(task_id, active)
         active_lock = asyncio.Lock()
@@ -466,10 +470,6 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
         add_message(task_id, "system", "AGENT_COMPLETED:reviewer")
 
         # Generate real downloadable source bundles for app and website requests.
-        software_request = bool(re.search(
-            r"\b(app|application|website|web app|software|android|apk|mobile app|frontend|backend)\b|অ্যাপ|ওয়েবসাইট|সফটওয়্যার|মোবাইল অ্যাপ|ওয়েব অ্যাপ",
-            goal, re.IGNORECASE,
-        ))
         if software_request:
             report_progress(task_id, "Project Builder is generating actual source files", "project_builder")
             try:
