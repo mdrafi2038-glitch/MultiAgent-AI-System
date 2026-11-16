@@ -11,14 +11,14 @@ def test_password_auth_accepts_correct_password(monkeypatch):
 def test_password_auth_rejects_wrong_password(monkeypatch):
     monkeypatch.setattr(main, "APP_PASSWORD", "test-secret")
     with pytest.raises(HTTPException) as error:
-        main.require_auth("wrong")
+        main.require_auth("wrong", None)
     assert error.value.status_code == 401
 
 
 def test_password_auth_fails_closed_when_not_configured(monkeypatch):
     monkeypatch.setattr(main, "APP_PASSWORD", "")
     with pytest.raises(HTTPException) as error:
-        main.require_auth("anything")
+        main.require_auth("anything", None)
     assert error.value.status_code == 503
 
 
