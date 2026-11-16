@@ -61,7 +61,8 @@ def get_auth_type(plugin_id: str) -> str:
         row = db.execute(_sql("SELECT auth_type FROM plugin_connections WHERE plugin_id=%s AND status=%s"), (plugin_id, "connected")).fetchone()
     return row["auth_type"] if row else "bearer"
 
-\ndef get_credential(plugin_id: str) -> str | None:
+
+def get_credential(plugin_id: str) -> str | None:
     with connect() as db:
         row = db.execute(_sql("SELECT credential_encrypted FROM plugin_connections WHERE plugin_id=%s AND status=%s"),
                          (plugin_id, "connected")).fetchone()
@@ -100,6 +101,14 @@ def list_connections(_: bool = Depends(require_auth)):
     result.setdefault("github", {"connected": bool(os.getenv("GITHUB_TOKEN", "").strip()),
         "status": "connected" if os.getenv("GITHUB_TOKEN", "").strip() else "disconnected",
         "auth_type": "environment", "updated_at": None, "has_credential": bool(os.getenv("GITHUB_TOKEN", "").strip())})
+    with connect() as db:
+        plugins = db.execute("SELECT id,enabled,auth_env FROM custom_plugins").fetchall()
+    for plugin in plugins:
+        if plugin["id"] not in result:
+            legacy = bool(plugin["auth_env"] and os.getenv(plugin["auth_env"], "").strip())
+            connected = bool(plugin["enabled"] and (legacy or not plugin["auth_env"]))
+            result[plugin["id"]] = {"connected": connected, "status": "connected" if connected else "disconnected",
+                "auth_type": "environment" if legacy else None, "updated_at": None, "has_credential": legacy}
     return {"connections": result}
 
 
@@ -107,6 +116,8 @@ def list_connections(_: bool = Depends(require_auth)):
 async def connect_plugin(plugin_id: str, body: ConnectRequest, _: bool = Depends(require_auth)):
     token = body.credential.strip()
     if plugin_id == "github":
+        if body.auth_type != "bearer":
+            raise HTTPException(400, "GitHub connections use Bearer tokens.")
         if not token:
             raise HTTPException(400, "Enter a GitHub fine-grained personal access token.")
         try:
