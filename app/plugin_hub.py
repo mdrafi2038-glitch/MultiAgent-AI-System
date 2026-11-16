@@ -41,6 +41,7 @@ def require_auth(
 
 
 from .storage import connect, _sql
+from .plugin_connections import get_credential
 
 router = APIRouter(prefix="/api/plugins/custom", tags=["custom-plugins"])
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{1,47}$")
@@ -245,10 +246,10 @@ async def execute_custom_plugin(plugin_id: str, body: PluginExecute, _: bool = D
         raise HTTPException(400, "Action URL must stay on the plugin's configured host.")
     headers = {"Accept": "application/json"}
     env_name = plugin.get("auth_env")
-    if env_name:
-        token = os.getenv(env_name, "").strip()
+    if env_name or get_credential(plugin_id):
+        token = get_credential(plugin_id) or (os.getenv(env_name, "").strip() if env_name else "")
         if not token:
-            raise HTTPException(503, f"Credential environment variable {env_name} is not configured on the host.")
+            raise HTTPException(503, "Plugin credential is not connected. Reconnect this integration.")
         headers["Authorization"] = f"Bearer {token}"
     try:
         async with httpx.AsyncClient(timeout=25, follow_redirects=False) as client:
