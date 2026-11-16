@@ -183,7 +183,7 @@ function showPluginDetails(card){selectedPluginCard=card;const title=card.queryS
 document.querySelectorAll('#pluginCatalog .plugin-tile').forEach(card=>card.addEventListener('click',e=>{if(e.target.closest('button'))return;showPluginDetails(card)}));
 $('closePluginDetail').onclick=()=>$('pluginDetailBackdrop').classList.add('hidden');
 $('pluginDetailBackdrop').addEventListener('click',e=>{if(e.target===$('pluginDetailBackdrop'))$('pluginDetailBackdrop').classList.add('hidden')});
-$('pluginDetailAction').onclick=()=>{const title=selectedPluginCard?.querySelector('h3')?.textContent;$('pluginDetailBackdrop').classList.add('hidden');if(title==='GitHub')openPluginConnection('github','GitHub','Connect using a GitHub fine-grained personal access token.',false)else if(title==='Connect an API')$('showOpenApi').click();else $('showManualPluginCard').click()};
+$('pluginDetailAction').onclick=()=>{const title=selectedPluginCard?.querySelector('h3')?.textContent;$('pluginDetailBackdrop').classList.add('hidden');if(title==='GitHub')openPluginConnection('github','GitHub','Connect using a GitHub fine-grained personal access token.',false);else if(title==='Connect an API')$('showOpenApi').click();else $('showManualPluginCard').click()};
 $('showManualPluginCard').onclick=()=>{$('manualPluginForm').classList.remove('hidden');$('openApiInstaller').classList.add('hidden');$('manualPluginForm').scrollIntoView({behavior:'smooth',block:'start'})};
 $('githubConfigure').onclick=()=>openPluginConnection('github','GitHub','Connect using a GitHub fine-grained personal access token.',false);
 document.querySelectorAll('[data-close-plugin-setup]').forEach(b=>b.onclick=()=>b.closest('.plugin-setup-card').classList.add('hidden'));
