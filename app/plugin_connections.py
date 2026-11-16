@@ -10,7 +10,28 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from .storage import connect, _sql
-from .plugin_hub import require_auth
+from fastapi import Header, Cookie
+import hmac
+import time
+
+
+def require_auth(x_app_password: str | None = Header(default=None), dashboard_session: str | None = Cookie(default=None, alias="dashboard_session")):
+    expected = os.getenv("APP_PASSWORD", "")
+    if not expected:
+        raise HTTPException(503, "Dashboard password is not configured.")
+    if x_app_password and hmac.compare_digest(x_app_password, expected):
+        return True
+    if dashboard_session and "." in dashboard_session:
+        try:
+            expiry_text, signature = dashboard_session.split(".", 1)
+            expiry = int(expiry_text)
+            payload = f"dashboard-session:{expiry}".encode()
+            expected_signature = hmac.new(expected.encode(), payload, "sha256").hexdigest()
+            if int(time.time()) < expiry <= int(time.time()) + 30 * 24 * 60 * 60 + 60 and hmac.compare_digest(signature, expected_signature):
+                return True
+        except (TypeError, ValueError):
+            pass
+    raise HTTPException(401, "Incorrect or missing dashboard password.")
 
 router = APIRouter(prefix="/api/plugins", tags=["plugin-connections"])
 
@@ -114,7 +135,7 @@ async def connect_plugin(plugin_id: str, body: ConnectRequest, _: bool = Depends
     if read_action:
         headers = {"Accept": "application/json"}
         if token:
-            headers["Authorization"] = ("Bearer " if body.auth_type == "bearer" else "") + token
+            headers["Authorization"] = "Bearer " + token if body.auth_type == "bearer" else headers.update({"X-API-Key": token})
         try:
             async with httpx.AsyncClient(timeout=18, follow_redirects=False) as client:
                 response = await client.get(row["base_url"] + read_action["path"], headers=headers)
