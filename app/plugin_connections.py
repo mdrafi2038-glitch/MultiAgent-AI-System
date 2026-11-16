@@ -56,7 +56,7 @@ def save_credential(plugin_id: str, token: str | None, auth_type: str = "bearer"
         """), (plugin_id, encrypted, auth_type, "connected", now))
 
 
-def get_credential(plugin_id: str) -> str | None:
+def get_auth_type(plugin_id: str) -> str:\n    with connect() as db:\n        row = db.execute(_sql("SELECT auth_type FROM plugin_connections WHERE plugin_id=%s AND status=%s"), (plugin_id, "connected")).fetchone()\n    return row["auth_type"] if row else "bearer"\n\n\ndef get_credential(plugin_id: str) -> str | None:
     with connect() as db:
         row = db.execute(_sql("SELECT credential_encrypted FROM plugin_connections WHERE plugin_id=%s AND status=%s"),
                          (plugin_id, "connected")).fetchone()
@@ -135,7 +135,7 @@ async def connect_plugin(plugin_id: str, body: ConnectRequest, _: bool = Depends
     if read_action:
         headers = {"Accept": "application/json"}
         if token:
-            headers["Authorization"] = "Bearer " + token if body.auth_type == "bearer" else headers.update({"X-API-Key": token})
+            if body.auth_type == "bearer":\n                headers["Authorization"] = "Bearer " + token\n            else:\n                headers["X-API-Key"] = token
         try:
             async with httpx.AsyncClient(timeout=18, follow_redirects=False) as client:
                 response = await client.get(row["base_url"] + read_action["path"], headers=headers)
