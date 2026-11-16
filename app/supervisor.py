@@ -34,8 +34,9 @@ def render_deploy_requested(goal: str) -> bool:
     """Avoid treating a request to inspect deploy health as permission to deploy."""
     text = goal.lower()
     return bool(re.search(
-        r"\b(deploy|redeploy|release)\b.{0,60}\b(render|service|app|site|it|this)\b|"
-        r"\b(render|service|app|site|it|this)\b.{0,60}\b(deploy|redeploy|release)\b|"
+        r"\b(?:deploy|redeploy|release)\s+(?:to|on|into)\s+(?:render|production|the\s+service|the\s+app|the\s+site)\b|"
+        r"\b(?:deploy|redeploy)\s+(?:the\s+)?(?:app|site|service|it|this)\b|"
+        r"\b(?:render|app|site|service)\s+(?:now|again|please)\s+(?:deploy|redeploy)\b|"
         r"ডিপ্লয়\s*(কর|দাও|চালু)|ডেপ্লয়\s*(কর|দাও|চালু)",
         text,
     ))
