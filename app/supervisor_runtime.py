@@ -22,8 +22,9 @@ def _render_headers() -> dict[str, str]:
 async def inspect_render_service() -> dict:
     """Read the configured Render service and its latest deployments."""
     service_id = os.getenv("RENDER_SERVICE_ID", "").strip()
-    if not service_id:
-        return {"state": "blocked", "integration": "render", "reason": "RENDER_SERVICE_ID is not configured."}
+    if not render_adapter_configured():
+        missing = [name for name in ("RENDER_API_KEY", "RENDER_SERVICE_ID") if not os.getenv(name, "").strip()]
+        return {"state": "blocked", "integration": "render", "reason": "Missing Render configuration: " + ", ".join(missing)}
     try:
         async with httpx.AsyncClient(timeout=25) as client:
             headers = _render_headers()
