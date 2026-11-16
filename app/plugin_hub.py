@@ -219,7 +219,8 @@ def create_custom_plugin(body: CustomPluginCreate, _: bool = Depends(require_aut
 @router.delete("/{plugin_id}")
 def delete_custom_plugin(plugin_id: str, _: bool = Depends(require_auth)):
     with connect() as db:
-        cur = db.execute(_sql("DELETE FROM plugin_connections WHERE plugin_id=%s"), (plugin_id,))\n        cur = db.execute(_sql("DELETE FROM custom_plugins WHERE id=%s"), (plugin_id,))
+        db.execute(_sql("DELETE FROM plugin_connections WHERE plugin_id=%s"), (plugin_id,))
+        cur = db.execute(_sql("DELETE FROM custom_plugins WHERE id=%s"), (plugin_id,))
     if not cur.rowcount:
         raise HTTPException(404, "Plugin not found.")
     return {"deleted": True, "plugin_id": plugin_id}
@@ -250,7 +251,10 @@ async def execute_custom_plugin(plugin_id: str, body: PluginExecute, _: bool = D
         token = get_credential(plugin_id) or (os.getenv(env_name, "").strip() if env_name else "")
         if not token:
             raise HTTPException(503, "Plugin credential is not connected. Reconnect this integration.")
-        if get_auth_type(plugin_id) == "api_key":\n            headers["X-API-Key"] = token\n        else:\n            headers["Authorization"] = f"Bearer {token}"
+        if get_auth_type(plugin_id) == "api_key":
+            headers["X-API-Key"] = token
+        else:
+            headers["Authorization"] = f"Bearer {token}"
     try:
         async with httpx.AsyncClient(timeout=25, follow_redirects=False) as client:
             response = await client.request(action["method"], target, params=body.params, json=body.body, headers=headers)
