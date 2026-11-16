@@ -303,7 +303,10 @@ async def run_chat_plugin_action(plugin_id: str, action_id: str, params=None, bo
     if env_name:
         token = os.getenv(env_name, "").strip()
         if not token: raise HTTPException(503, "Plugin credential is not configured on the host.")
-        headers["Authorization"] = "Bearer " + token
+        if get_auth_type(plugin_id) == "api_key":
+            headers["X-API-Key"] = token
+        else:
+            headers["Authorization"] = "Bearer " + token
     try:
         async with httpx.AsyncClient(timeout=25, follow_redirects=False) as client:
             response = await client.request(action["method"], target, params=params, json=body, headers=headers)
