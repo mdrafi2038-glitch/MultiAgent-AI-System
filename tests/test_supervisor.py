@@ -33,6 +33,7 @@ def test_render_inspection_does_not_schedule_a_deployment():
     assert validate_plan(plan)
     ids = [step["id"] for step in plan["steps"]]
     assert ids == ["render_preflight"]
+    assert plan["steps"][0]["capability"] == "service_read"
 
 
 def test_explicit_render_deploy_adds_approval_gated_step():
