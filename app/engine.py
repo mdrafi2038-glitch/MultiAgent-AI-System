@@ -244,13 +244,8 @@ async def _run_github_apk_build(task_id: int, goal: str) -> dict | None:
         return None
     repository = _github_repository_from_text(goal)
     if not repository:
-        question = (
-            "APK build করার জন্য GitHub repository-এর owner/repository নাম বা URL দাও। "
-            "যদি নির্দিষ্ট workflow জানো, তার .yml ফাইলের নামও দাও।"
-        )
-        pause_task_for_input(task_id)
-        add_message(task_id, "orchestrator", "CLARIFICATION_NEEDED:\n" + question)
-        return {"task_id": task_id, "status": "needs_input", "questions": question}
+        # Produce the source ZIP first; an APK workflow can be connected afterwards.
+        return None
     token = os.getenv("GITHUB_TOKEN", "").strip()
     if not token:
         raise RuntimeError(
