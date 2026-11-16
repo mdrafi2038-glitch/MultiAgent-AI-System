@@ -76,3 +76,17 @@ def test_failed_task_retains_active_agent_for_dashboard(tmp_path, monkeypatch):
     task = storage.get_task(task_id)
     assert task["status"] == "failed"
     assert task["active_agent"] == "research"
+
+
+def test_task_artifact_persistence_round_trip(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "artifacts.db"))
+    storage.init_db()
+    task_id = storage.create_task("Build a website")
+    artifact_id = storage.save_task_artifact(task_id, "project.zip", "application/zip", b"PK\\x03\\x04demo")
+    listed = storage.task_artifacts(task_id)
+    assert len(listed) == 1
+    assert listed[0]["id"] == artifact_id
+    found = storage.get_task_artifact(task_id, artifact_id)
+    assert bytes(found["content"]) == b"PK\\x03\\x04demo"
+    assert found["mime_type"] == "application/zip"
