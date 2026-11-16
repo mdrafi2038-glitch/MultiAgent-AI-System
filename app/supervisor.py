@@ -1,8 +1,4 @@
-"""Supervisor planning and safety policy for multi-agent tasks.
-
-This module creates an explicit dependency graph. It does not execute external
-side effects; tool adapters must be registered separately before a step can run.
-"""
+"""Supervisor planning and safety policy for multi-agent tasks."""
 from __future__ import annotations
 
 import re
@@ -16,7 +12,6 @@ TOOL_CAPABILITIES = {
     "agents": {"research", "coding", "writing", "data", "qa"},
 }
 
-# Side effects that always need a fresh, explicit approval at execution time.
 APPROVAL_REQUIRED = {
     "branch_write", "file_write", "workflow_dispatch", "pull_request",
     "merge", "deploy", "environment_write", "api_write", "delete",
@@ -35,8 +30,29 @@ def detect_integrations(goal: str) -> set[str]:
     return found
 
 
+def render_deploy_requested(goal: str) -> bool:
+    """Avoid treating a request to inspect deploy health as permission to deploy."""
+    text = goal.lower()
+    return bool(re.search(
+        r"\b(?:deploy|redeploy|release)\s+(?:to|on|into)\s+(?:render|production|the\s+service|the\s+app|the\s+site)\b|"
+        r"\b(?:deploy|redeploy)\s+(?:the\s+)?(?:app|site|service|it|this)\b|"
+        r"\b(?:render|app|site|service)\s+(?:now|again|please)\s+(?:deploy|redeploy)\b|"
+        r"ডিপ্লয়\s*(কর|দাও|চালু)|ডেপ্লয়\s*(কর|দাও|চালু)",
+        text,
+    ))
+
+
+def github_write_requested(goal: str) -> bool:
+    text = goal.lower()
+    return bool(re.search(
+        r"\b(fix|update|change|edit|modify|add|remove|delete|commit|push|create|write)\b|"
+        r"ঠিক\s*কর|পরিবর্তন\s*কর|যোগ\s*কর|মুছে\s*দাও",
+        text,
+    ))
+
+
 def build_supervisor_plan(goal: str, specialists: list[str] | None = None) -> dict[str, Any]:
-    """Return a deterministic, inspectable task DAG with approval gates."""
+    """Return an inspectable dependency graph with approval gates only for requested writes."""
     integrations = detect_integrations(goal)
     specialists = list(dict.fromkeys(specialists or ["research", "writer"]))
     steps: list[dict[str, Any]] = []
@@ -59,31 +75,32 @@ def build_supervisor_plan(goal: str, specialists: list[str] | None = None) -> di
     if "github" in integrations:
         add("github_inspect", "Inspect repository, workflows and current state",
             "github_agent", "github", "read")
-        add("code_work", "Implement requested repository changes",
-            "coding_agent", "github", "file_write", ["github_inspect"], True,
-            "Requires a connected GitHub credential and scoped write permission.")
-        add("quality_checks", "Run tests and inspect the proposed diff",
-            "qa_agent", "agents", "qa", ["code_work"])
-        add("pull_request", "Prepare a pull request for review",
-            "github_agent", "github", "pull_request", ["quality_checks"], True)
-        add("merge", "Merge only after explicit approval",
-            "supervisor", "github", "merge", ["pull_request"], True)
+        if github_write_requested(goal):
+            add("code_work", "Implement requested repository changes",
+                "coding_agent", "github", "file_write", ["github_inspect"], True,
+                "Requires a connected GitHub credential and scoped write permission.")
+            add("quality_checks", "Run tests and inspect the proposed diff",
+                "qa_agent", "agents", "qa", ["code_work"])
+            add("pull_request", "Prepare a pull request for review",
+                "github_agent", "github", "pull_request", ["quality_checks"], True)
+            add("merge", "Merge only after explicit approval",
+                "supervisor", "github", "merge", ["pull_request"], True)
 
     if "render" in integrations:
-        dependency = ["quality_checks"] if "github" in integrations else []
-        if "github" in integrations:
-            dependency = ["merge"]
+        dependency = ["merge"] if "merge" in {step["id"] for step in steps} else []
         add("render_preflight", "Check Render service, latest commit and deploy health",
             "render_agent", "render", "service_read", dependency)
-        add("render_deploy", "Deploy the verified GitHub revision",
-            "render_agent", "render", "deploy", ["render_preflight"], True,
-            "Deployment is approval-gated; auto-deploy may already run after a push.")
+        if render_deploy_requested(goal):
+            add("render_deploy", "Deploy the verified GitHub revision",
+                "render_agent", "render", "deploy", ["render_preflight"], True,
+                "Requires a configured Render API adapter and a fresh explicit approval.")
 
     if "api_plugin" in integrations:
         add("plugin_discovery", "Check configured API plugin capabilities",
             "integration_agent", "api_plugin", "api_read")
-        add("plugin_write", "Perform approved external API changes",
-            "integration_agent", "api_plugin", "api_write", ["plugin_discovery"], True)
+        if re.search(r"\b(create|update|change|delete|send|submit|modify)\b", goal, re.IGNORECASE):
+            add("plugin_write", "Perform approved external API changes",
+                "integration_agent", "api_plugin", "api_write", ["plugin_discovery"], True)
 
     if not integrations:
         for index, key in enumerate(specialists, start=1):
@@ -96,7 +113,7 @@ def build_supervisor_plan(goal: str, specialists: list[str] | None = None) -> di
         "supervisor": "Supervisor Agent",
         "goal": goal[:1200],
         "integrations": sorted(integrations),
-        "execution_mode": "planned_only",
+        "execution_mode": "adapter_execution_pending",
         "steps": steps,
         "policy": {
             "read_only_steps_may_run_without_side_effect_approval": True,
@@ -104,8 +121,8 @@ def build_supervisor_plan(goal: str, specialists: list[str] | None = None) -> di
             "unknown_tools_are_never_assumed_available": True,
         },
         "notice": (
-            "This is a plan, not proof that an external action ran. A step can execute "
-            "only when its matching integration adapter and credentials are configured."
+            "Read-only actions run only when a matching adapter and credentials are configured. "
+            "External changes require a fresh approval and are reported only after the provider confirms them."
         ),
     }
 
