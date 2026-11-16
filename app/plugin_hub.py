@@ -41,7 +41,7 @@ def require_auth(
 
 
 from .storage import connect, _sql
-from .plugin_connections import get_credential, connection_status
+from .plugin_connections import get_credential, get_auth_type
 
 router = APIRouter(prefix="/api/plugins/custom", tags=["custom-plugins"])
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{1,47}$")
@@ -250,7 +250,7 @@ async def execute_custom_plugin(plugin_id: str, body: PluginExecute, _: bool = D
         token = get_credential(plugin_id) or (os.getenv(env_name, "").strip() if env_name else "")
         if not token:
             raise HTTPException(503, "Plugin credential is not connected. Reconnect this integration.")
-        headers["Authorization"] = f"Bearer {token}"
+        if get_auth_type(plugin_id) == "api_key":\n            headers["X-API-Key"] = token\n        else:\n            headers["Authorization"] = f"Bearer {token}"
     try:
         async with httpx.AsyncClient(timeout=25, follow_redirects=False) as client:
             response = await client.request(action["method"], target, params=body.params, json=body.body, headers=headers)
