@@ -11,8 +11,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from .agents import AGENTS, choose_agents
-from .supervisor import build_supervisor_plan, validate_plan
-from .storage import add_message, finish_task, pause_task_for_input, set_active_agent, set_active_agents, save_task_artifact
+from .supervisor import build_supervisor_plan, validate_plan, render_deploy_requested
+from .supervisor_runtime import render_adapter_configured, inspect_render_service, deploy_render_service
+from .storage import add_message, finish_task, pause_task_for_input, set_active_agent, set_active_agents, save_task_artifact, task_messages
 from .artifacts import create_project_zip
 
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
@@ -344,6 +345,64 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
         supervisor_plan = build_supervisor_plan(goal, specialist_keys)
         if not validate_plan(supervisor_plan):
             raise RuntimeError("Supervisor generated an invalid task dependency graph.")
+
+        # Execute the real, read-only Render preflight when its adapter is configured.
+        # A deployment is a separate side effect and pauses until the user explicitly approves it.
+        if "render" in supervisor_plan.get("integrations", []):
+            render_result = await inspect_render_service()
+            render_step = next((step for step in supervisor_plan["steps"] if step["id"] == "render_preflight"), None)
+            if render_step:
+                render_step["execution_state"] = render_result.get("state", "blocked")
+            add_message(task_id, "render_agent",
+                "SUPERVISOR_STEP_RESULT:render_preflight:" + json.dumps(render_result, ensure_ascii=False))
+            if render_result.get("state") == "completed":
+                supervisor_plan["execution_mode"] = "adapter_execution"
+                tool_context += "\\n\\nLIVE RENDER PREFLIGHT (verified from Render API):\\n" + json.dumps(render_result, ensure_ascii=False)
+            else:
+                supervisor_plan["execution_mode"] = "partially_blocked"
+                tool_context += "\\n\\nRENDER PREFLIGHT BLOCKED: " + str(render_result.get("reason", "Render adapter unavailable."))
+
+            if render_deploy_requested(goal):
+                messages = task_messages(task_id)
+                approval_pending = any(
+                    item["agent"] == "supervisor" and str(item["content"]).startswith("APPROVAL_REQUIRED:render_deploy")
+                    for item in messages
+                )
+                latest_user = next((str(item["content"]).strip() for item in reversed(messages) if item["agent"] == "user"), "")
+                approved = approval_pending and latest_user.upper() in {"APPROVE", "APPROVED", "YES, DEPLOY"}
+                declined = approval_pending and latest_user.upper() in {"NO", "DECLINE", "CANCEL"}
+                deploy_step = next((step for step in supervisor_plan["steps"] if step["id"] == "render_deploy"), None)
+
+                if render_result.get("state") != "completed":
+                    if deploy_step:
+                        deploy_step["execution_state"] = "blocked"
+                    tool_context += "\\nDeployment was not attempted because Render preflight or credentials were unavailable."
+                elif approved:
+                    deploy_result = await deploy_render_service()
+                    if deploy_step:
+                        deploy_step["execution_state"] = deploy_result.get("state", "failed")
+                    add_message(task_id, "render_agent",
+                        "SUPERVISOR_STEP_RESULT:render_deploy:" + json.dumps(deploy_result, ensure_ascii=False))
+                    tool_context += "\\n\\nRENDER DEPLOY ACTION RESULT:\\n" + json.dumps(deploy_result, ensure_ascii=False)
+                elif declined:
+                    if deploy_step:
+                        deploy_step["execution_state"] = "declined"
+                    tool_context += "\\nUser declined the Render deployment. No deployment was triggered."
+                else:
+                    if deploy_step:
+                        deploy_step["execution_state"] = "awaiting_approval"
+                    if not approval_pending:
+                        add_message(task_id, "supervisor",
+                            "APPROVAL_REQUIRED:render_deploy: Render preflight is complete. A deployment will change the live service. Type APPROVE to trigger it, or NO to continue without deploying.")
+                    question = (
+                        "Render service preflight is complete. The next step will trigger a live deployment. "
+                        "Type exactly APPROVE to deploy, or NO to skip deployment."
+                    )
+                    add_message(task_id, "orchestrator", "CLARIFICATION_NEEDED:\\n" + question)
+                    add_message(task_id, "supervisor", "SUPERVISOR_PLAN:" + json.dumps(supervisor_plan, ensure_ascii=False))
+                    pause_task_for_input(task_id)
+                    return {"task_id": task_id, "status": "needs_input", "questions": question}
+
         add_message(task_id, "supervisor", "SUPERVISOR_PLAN:" + json.dumps(supervisor_plan, ensure_ascii=False))
         add_message(task_id, "system", "AGENT_COMPLETED:supervisor")
         report_progress(task_id, "Orchestrator is preparing the execution plan", "orchestrator")
