@@ -2,9 +2,10 @@ import json
 import hmac
 import os
 import re
+import time
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, Header, HTTPException, Response
 import httpx
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -49,12 +50,48 @@ def startup():
     recover_interrupted_tasks()
 
 
-def require_auth(x_app_password: str | None = Header(default=None)):
+SESSION_COOKIE = "dashboard_session"
+SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
+SESSION_DEFAULT_SECONDS = 12 * 60 * 60
+
+
+def _session_token(expires_at: int) -> str:
+    payload = f"dashboard-session:{expires_at}".encode()
+    signature = hmac.new(APP_PASSWORD.encode(), payload, "sha256").hexdigest()
+    return f"{expires_at}.{signature}"
+
+
+def _valid_session(token: str | None) -> bool:
+    if not APP_PASSWORD or not token or "." not in token:
+        return False
+    try:
+        expiry_text, signature = token.split(".", 1)
+        expiry = int(expiry_text)
+    except (TypeError, ValueError):
+        return False
+    now = int(time.time())
+    if expiry <= now or expiry > now + SESSION_TTL_SECONDS + 60:
+        return False
+    expected = _session_token(expiry).split(".", 1)[1]
+    return hmac.compare_digest(signature, expected)
+
+
+def require_auth(
+    x_app_password: str | None = Header(default=None),
+    dashboard_session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+):
     if not APP_PASSWORD:
         raise HTTPException(status_code=503, detail="Dashboard password is not configured. Set APP_PASSWORD in the hosting environment.")
-    if not x_app_password or not hmac.compare_digest(x_app_password, APP_PASSWORD):
-        raise HTTPException(status_code=401, detail="Incorrect or missing dashboard password.")
-    return True
+    if x_app_password and hmac.compare_digest(x_app_password, APP_PASSWORD):
+        return True
+    if _valid_session(dashboard_session):
+        return True
+    raise HTTPException(status_code=401, detail="Incorrect or missing dashboard password.")
+
+
+class AuthLoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=500)
+    remember: bool = False
 
 
 class ChatRequest(BaseModel):
@@ -80,6 +117,38 @@ class GitHubDispatchRequest(BaseModel):
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"ok": True, "service": "multiagent-ai-system", "dashboardConfigured": bool(APP_PASSWORD)}
+
+
+@app.post("/api/auth/login")
+def dashboard_login(body: AuthLoginRequest, response: Response):
+    if not APP_PASSWORD:
+        raise HTTPException(status_code=503, detail="Dashboard password is not configured.")
+    if not hmac.compare_digest(body.password, APP_PASSWORD):
+        raise HTTPException(status_code=401, detail="Incorrect dashboard password.")
+    lifetime = SESSION_TTL_SECONDS if body.remember else SESSION_DEFAULT_SECONDS
+    expires_at = int(time.time()) + lifetime
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=_session_token(expires_at),
+        max_age=lifetime if body.remember else None,
+        expires=expires_at,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        path="/",
+    )
+    return {"authenticated": True, "remembered": body.remember}
+
+
+@app.post("/api/auth/logout")
+def dashboard_logout(response: Response):
+    response.delete_cookie(key=SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="strict")
+    return {"authenticated": False}
+
+
+@app.get("/api/auth/session")
+def dashboard_session_status(_: bool = Depends(require_auth)):
+    return {"authenticated": True}
 
 
 @app.get("/api/agents")
