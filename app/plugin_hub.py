@@ -41,7 +41,7 @@ def require_auth(
 
 
 from .storage import connect, _sql
-from .plugin_connections import get_credential
+from .plugin_connections import get_credential, connection_status
 
 router = APIRouter(prefix="/api/plugins/custom", tags=["custom-plugins"])
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{1,47}$")
@@ -219,7 +219,7 @@ def create_custom_plugin(body: CustomPluginCreate, _: bool = Depends(require_aut
 @router.delete("/{plugin_id}")
 def delete_custom_plugin(plugin_id: str, _: bool = Depends(require_auth)):
     with connect() as db:
-        cur = db.execute(_sql("DELETE FROM custom_plugins WHERE id=%s"), (plugin_id,))
+        cur = db.execute(_sql("DELETE FROM plugin_connections WHERE plugin_id=%s"), (plugin_id,))\n        cur = db.execute(_sql("DELETE FROM custom_plugins WHERE id=%s"), (plugin_id,))
     if not cur.rowcount:
         raise HTTPException(404, "Plugin not found.")
     return {"deleted": True, "plugin_id": plugin_id}
