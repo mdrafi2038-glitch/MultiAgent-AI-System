@@ -56,6 +56,15 @@ def save_credential(plugin_id: str, token: str | None, auth_type: str = "bearer"
         """), (plugin_id, encrypted, auth_type, "connected", now))
 
 
+def mark_disconnected(plugin_id: str):
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as db:
+        db.execute(_sql("UPDATE plugin_connections SET credential_encrypted=%s,status=%s,updated_at=%s WHERE plugin_id=%s"),
+                   (None, "disconnected", now, plugin_id))
+        if plugin_id != "github":
+            db.execute(_sql("UPDATE custom_plugins SET enabled=%s WHERE id=%s"), (False, plugin_id))
+
+
 def get_auth_type(plugin_id: str) -> str:
     with connect() as db:
         row = db.execute(_sql("SELECT auth_type FROM plugin_connections WHERE plugin_id=%s AND status=%s"), (plugin_id, "connected")).fetchone()
@@ -161,13 +170,13 @@ async def connect_plugin(plugin_id: str, body: ConnectRequest, _: bool = Depends
             async with httpx.AsyncClient(timeout=18, follow_redirects=False) as client:
                 response = await client.get(row["base_url"] + read_action["path"], headers=headers)
             if response.status_code in (401, 403):
-                save_credential(plugin_id, None, "none")
+                mark_disconnected(plugin_id)
                 raise HTTPException(401, "The service rejected this credential. Check it and reconnect.")
             if response.status_code in (301, 302, 303, 307, 308):
-                save_credential(plugin_id, None, "none")
+                mark_disconnected(plugin_id)
                 raise HTTPException(502, "The service redirected the connection check; redirects are blocked.")
         except httpx.HTTPError as exc:
-            save_credential(plugin_id, None, "none")
+            mark_disconnected(plugin_id)
             raise HTTPException(502, "Could not verify this integration: " + type(exc).__name__) from exc
     with connect() as db:
         db.execute(_sql("UPDATE custom_plugins SET enabled=%s WHERE id=%s"), (True, plugin_id))
@@ -176,8 +185,5 @@ async def connect_plugin(plugin_id: str, body: ConnectRequest, _: bool = Depends
 
 @router.delete("/{plugin_id}/connection")
 def disconnect_plugin(plugin_id: str, _: bool = Depends(require_auth)):
-    with connect() as db:
-        db.execute(_sql("UPDATE plugin_connections SET credential_encrypted=%s,status=%s,updated_at=%s WHERE plugin_id=%s"), (None, "disconnected", datetime.now(timezone.utc).isoformat(), plugin_id))
-        if plugin_id != "github":
-            db.execute(_sql("UPDATE custom_plugins SET enabled=%s WHERE id=%s"), (False, plugin_id))
+    mark_disconnected(plugin_id)
     return {"disconnected": True, "plugin_id": plugin_id, "message": "Integration disconnected. Its setup is kept so you can reconnect later."}
