@@ -265,3 +265,17 @@ async def execute_custom_plugin(plugin_id: str, body: PluginExecute, _: bool = D
     except ValueError:
         result = response.text[:12000]
     return {"plugin_id": plugin_id, "action_id": body.action_id, "status_code": response.status_code, "result": result}
+
+
+class PluginEnabledUpdate(BaseModel):
+    enabled: bool
+
+
+@router.patch("/{plugin_id}")
+def update_custom_plugin(plugin_id: str, body: PluginEnabledUpdate, _: bool = Depends(require_auth)):
+    """Enable or pause a configured integration without deleting its setup."""
+    with connect() as db:
+        cur = db.execute(_sql("UPDATE custom_plugins SET enabled=%s WHERE id=%s"), (body.enabled, plugin_id))
+    if not cur.rowcount:
+        raise HTTPException(404, "Plugin not found.")
+    return {"updated": True, "plugin_id": plugin_id, "enabled": body.enabled}
