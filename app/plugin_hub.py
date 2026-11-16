@@ -279,3 +279,36 @@ def update_custom_plugin(plugin_id: str, body: PluginEnabledUpdate, _: bool = De
     if not cur.rowcount:
         raise HTTPException(404, "Plugin not found.")
     return {"updated": True, "plugin_id": plugin_id, "enabled": body.enabled}
+
+
+def chat_plugin_catalog():
+    with connect() as db:
+        rows = db.execute("SELECT id,name,description,actions_json FROM custom_plugins WHERE enabled=%s ORDER BY name", (True,)).fetchall()
+    return [{"plugin_id": r["id"], "name": r["name"], "description": r["description"][:300], "actions": [{"action_id": a["id"], "method": a["method"], "path": a["path"], "description": a.get("description", "")[:300]} for a in json.loads(r["actions_json"])]} for r in rows]
+
+async def run_chat_plugin_action(plugin_id: str, action_id: str, params=None, body=None, approved=False):
+    with connect() as db:
+        row = db.execute("SELECT * FROM custom_plugins WHERE id=%s AND enabled=%s", (plugin_id, True)).fetchone()
+    if not row: raise HTTPException(404, "Enabled plugin not found.")
+    plugin = dict(row)
+    action = next((a for a in json.loads(plugin["actions_json"]) if a["id"] == action_id), None)
+    if not action: raise HTTPException(404, "Action not found.")
+    if action["method"] != "GET" and not approved: raise HTTPException(403, "This action needs explicit approval.")
+    params = params if isinstance(params, dict) else {}
+    if len(json.dumps(params, ensure_ascii=False)) > 8000 or len(json.dumps(body, ensure_ascii=False)) > 20000: raise HTTPException(413, "Request parameters are too large.")
+    base = _public_https_url(plugin["base_url"]); target = base + action["path"]
+    if urlparse(target).hostname != urlparse(base).hostname: raise HTTPException(400, "Action URL must stay on the plugin's configured host.")
+    headers = {"Accept": "application/json"}; env_name = plugin.get("auth_env")
+    if env_name:
+        token = os.getenv(env_name, "").strip()
+        if not token: raise HTTPException(503, "Plugin credential is not configured on the host.")
+        headers["Authorization"] = "Bearer " + token
+    try:
+        async with httpx.AsyncClient(timeout=25, follow_redirects=False) as client:
+            response = await client.request(action["method"], target, params=params, json=body, headers=headers)
+    except httpx.HTTPError as exc: raise HTTPException(502, "Plugin request failed: " + type(exc).__name__) from exc
+    if response.status_code in (301,302,303,307,308): raise HTTPException(502, "Plugin redirects are blocked.")
+    if response.status_code >= 400: raise HTTPException(502, "Plugin API returned HTTP " + str(response.status_code))
+    try: result = response.json() if "json" in response.headers.get("content-type", "").lower() else response.text[:12000]
+    except ValueError: result = response.text[:12000]
+    return {"plugin_id": plugin_id, "plugin_name": plugin["name"], "action_id": action_id, "action_description": action.get("description", ""), "method": action["method"], "path": action["path"], "status_code": response.status_code, "result": result}
