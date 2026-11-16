@@ -131,7 +131,7 @@ def dashboard_login(body: AuthLoginRequest, response: Response):
         key=SESSION_COOKIE,
         value=_session_token(expires_at),
         max_age=lifetime if body.remember else None,
-        expires=expires_at,
+        expires=expires_at if body.remember else None,
         httponly=True,
         secure=True,
         samesite="strict",
