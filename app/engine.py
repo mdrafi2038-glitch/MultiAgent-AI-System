@@ -364,8 +364,8 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
 
             if render_deploy_requested(goal):
                 github_changes_unexecuted = any(step["id"] == "code_work" for step in supervisor_plan["steps"])
+                deploy_step = next((step for step in supervisor_plan["steps"] if step["id"] == "render_deploy"), None)
                 if github_changes_unexecuted:
-                    deploy_step = next((step for step in supervisor_plan["steps"] if step["id"] == "render_deploy"), None)
                     if deploy_step:
                         deploy_step["execution_state"] = "blocked"
                     tool_context += "\\nRender deployment blocked: the requested GitHub code-change/merge steps do not have an active execution adapter yet. No unverified revision will be deployed."
@@ -376,44 +376,43 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
                         }, ensure_ascii=False))
                 else:
                     messages = task_messages(task_id)
-                approval_pending = any(
-                    item["agent"] == "supervisor" and str(item["content"]).startswith("APPROVAL_REQUIRED:render_deploy")
-                    for item in messages
-                )
-                latest_user = next((str(item["content"]).strip() for item in reversed(messages) if item["agent"] == "user"), "")
-                approved = approval_pending and latest_user.upper() in {"APPROVE", "APPROVED", "YES, DEPLOY"}
-                declined = approval_pending and latest_user.upper() in {"NO", "DECLINE", "CANCEL"}
-                deploy_step = next((step for step in supervisor_plan["steps"] if step["id"] == "render_deploy"), None)
-
-                if render_result.get("state") != "completed":
-                    if deploy_step:
-                        deploy_step["execution_state"] = "blocked"
-                    tool_context += "\\nDeployment was not attempted because Render preflight or credentials were unavailable."
-                elif approved:
-                    deploy_result = await deploy_render_service()
-                    if deploy_step:
-                        deploy_step["execution_state"] = deploy_result.get("state", "failed")
-                    add_message(task_id, "render_agent",
-                        "SUPERVISOR_STEP_RESULT:render_deploy:" + json.dumps(deploy_result, ensure_ascii=False))
-                    tool_context += "\\n\\nRENDER DEPLOY ACTION RESULT:\\n" + json.dumps(deploy_result, ensure_ascii=False)
-                elif declined:
-                    if deploy_step:
-                        deploy_step["execution_state"] = "declined"
-                    tool_context += "\\nUser declined the Render deployment. No deployment was triggered."
-                else:
-                    if deploy_step:
-                        deploy_step["execution_state"] = "awaiting_approval"
-                    if not approval_pending:
-                        add_message(task_id, "supervisor",
-                            "APPROVAL_REQUIRED:render_deploy: Render preflight is complete. A deployment will change the live service. Type APPROVE to trigger it, or NO to continue without deploying.")
-                    question = (
-                        "Render service preflight is complete. The next step will trigger a live deployment. "
-                        "Type exactly APPROVE to deploy, or NO to skip deployment."
+                    approval_pending = any(
+                        item["agent"] == "supervisor" and str(item["content"]).startswith("APPROVAL_REQUIRED:render_deploy")
+                        for item in messages
                     )
-                    add_message(task_id, "orchestrator", "CLARIFICATION_NEEDED:\\n" + question)
-                    add_message(task_id, "supervisor", "SUPERVISOR_PLAN:" + json.dumps(supervisor_plan, ensure_ascii=False))
-                    pause_task_for_input(task_id)
-                    return {"task_id": task_id, "status": "needs_input", "questions": question}
+                    latest_user = next((str(item["content"]).strip() for item in reversed(messages) if item["agent"] == "user"), "")
+                    approved = approval_pending and latest_user.upper() in {"APPROVE", "APPROVED", "YES, DEPLOY"}
+                    declined = approval_pending and latest_user.upper() in {"NO", "DECLINE", "CANCEL"}
+
+                    if render_result.get("state") != "completed":
+                        if deploy_step:
+                            deploy_step["execution_state"] = "blocked"
+                        tool_context += "\\nDeployment was not attempted because Render preflight or credentials were unavailable."
+                    elif approved:
+                        deploy_result = await deploy_render_service()
+                        if deploy_step:
+                            deploy_step["execution_state"] = deploy_result.get("state", "failed")
+                        add_message(task_id, "render_agent",
+                            "SUPERVISOR_STEP_RESULT:render_deploy:" + json.dumps(deploy_result, ensure_ascii=False))
+                        tool_context += "\\n\\nRENDER DEPLOY ACTION RESULT:\\n" + json.dumps(deploy_result, ensure_ascii=False)
+                    elif declined:
+                        if deploy_step:
+                            deploy_step["execution_state"] = "declined"
+                        tool_context += "\\nUser declined the Render deployment. No deployment was triggered."
+                    else:
+                        if deploy_step:
+                            deploy_step["execution_state"] = "awaiting_approval"
+                        if not approval_pending:
+                            add_message(task_id, "supervisor",
+                                "APPROVAL_REQUIRED:render_deploy: Render preflight is complete. A deployment will change the live service. Type APPROVE to trigger it, or NO to continue without deploying.")
+                        question = (
+                            "Render service preflight is complete. The next step will trigger a live deployment. "
+                            "Type exactly APPROVE to deploy, or NO to skip deployment."
+                        )
+                        add_message(task_id, "orchestrator", "CLARIFICATION_NEEDED:\\n" + question)
+                        add_message(task_id, "supervisor", "SUPERVISOR_PLAN:" + json.dumps(supervisor_plan, ensure_ascii=False))
+                        pause_task_for_input(task_id)
+                        return {"task_id": task_id, "status": "needs_input", "questions": question}
 
         add_message(task_id, "supervisor", "SUPERVISOR_PLAN:" + json.dumps(supervisor_plan, ensure_ascii=False))
         add_message(task_id, "system", "AGENT_COMPLETED:supervisor")
