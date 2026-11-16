@@ -78,7 +78,7 @@ def connection_status(plugin_id: str) -> dict:
         row = db.execute(_sql("SELECT auth_type,status,updated_at,credential_encrypted FROM plugin_connections WHERE plugin_id=%s"),
                          (plugin_id,)).fetchone()
     if not row:
-        return {"connected": False, "status": "disconnected", "auth_type": None, "updated_at": None}
+        return {"connected": False, "status": "unconfigured", "auth_type": None, "updated_at": None}
     return {"connected": row["status"] == "connected", "status": row["status"],
             "auth_type": row["auth_type"], "updated_at": row["updated_at"],
             "has_credential": bool(row["credential_encrypted"])}
@@ -127,6 +127,8 @@ async def connect_plugin(plugin_id: str, body: ConnectRequest, _: bool = Depends
         row = db.execute(_sql("SELECT base_url,actions_json,auth_env FROM custom_plugins WHERE id=%s"), (plugin_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Plugin configuration not found.")
+    if not token and row["auth_env"]:
+        token = os.getenv(row["auth_env"], "").strip()
     if not token and row["auth_env"]:
         raise HTTPException(400, "This integration requires an API credential.")
     if token:
