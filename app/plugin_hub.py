@@ -4,7 +4,7 @@ import json
 import os
 import re
 import socket
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -79,6 +79,10 @@ class CustomPluginCreate(BaseModel):
     actions: list[dict] = Field(min_length=1, max_length=30)
 
 
+class OpenAPIDiscover(BaseModel):
+    spec_url: str = Field(min_length=10, max_length=1000)
+
+
 class PluginExecute(BaseModel):
     action_id: str = Field(min_length=1, max_length=64)
     params: dict = Field(default_factory=dict)
@@ -117,6 +121,77 @@ def list_custom_plugins(_: bool = Depends(require_auth)):
     with connect() as db:
         rows = db.execute("SELECT id,name,description,base_url,auth_env,actions_json,enabled,created_at FROM custom_plugins ORDER BY name").fetchall()
     return {"plugins": [_row(r) for r in rows]}
+
+
+@router.post("/discover")
+async def discover_openapi_plugin(body: OpenAPIDiscover, _: bool = Depends(require_auth)):
+    """Read a public OpenAPI JSON document and return a safe, reviewable action list."""
+    spec_url = body.spec_url.strip()
+    parsed_spec = urlparse(spec_url)
+    if parsed_spec.query or parsed_spec.fragment:
+        raise HTTPException(400, "Use a direct OpenAPI JSON URL without query strings or fragments.")
+    _public_https_url(spec_url)
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+            response = await client.get(spec_url, headers={"Accept": "application/json"})
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Could not read the API documentation.") from exc
+    if response.status_code in (301, 302, 303, 307, 308):
+        raise HTTPException(502, "Redirects are blocked when importing plugin specifications.")
+    if response.status_code >= 400:
+        raise HTTPException(502, f"API documentation returned HTTP {response.status_code}.")
+    if len(response.content) > 1_500_000:
+        raise HTTPException(413, "OpenAPI document is too large (1.5 MB maximum).")
+    try:
+        spec = response.json()
+    except ValueError as exc:
+        raise HTTPException(400, "Only OpenAPI/Swagger JSON documents are supported.") from exc
+    if not isinstance(spec, dict) or not isinstance(spec.get("paths"), dict):
+        raise HTTPException(400, "This does not look like a valid OpenAPI/Swagger document.")
+    servers = spec.get("servers") or []
+    server_url = servers[0].get("url") if servers and isinstance(servers[0], dict) else None
+    if server_url:
+        base_url = urljoin(spec_url, str(server_url))
+    else:
+        base_url = f"{parsed_spec.scheme}://{parsed_spec.netloc}"
+    base_url = _public_https_url(base_url)
+    actions = []
+    used_ids = set()
+    for path, methods in spec["paths"].items():
+        if not isinstance(path, str) or not isinstance(methods, dict):
+            continue
+        # Path parameters need a richer parameter editor; skip them rather than
+        # creating actions that would fail or interpolate unsafe user input.
+        if "{" in path or "}" in path:
+            continue
+        for method, operation in methods.items():
+            method = str(method).upper()
+            if method not in _METHODS or not isinstance(operation, dict):
+                continue
+            if not path.startswith("/") or path.startswith("//") or ".." in path or "\\\\" in path:
+                continue
+            raw_id = operation.get("operationId") or f"{method}_{path}"
+            action_id = re.sub(r"[^A-Za-z0-9_-]+", "_", str(raw_id)).strip("_")[:60] or f"action_{len(actions)+1}"
+            base_id, suffix = action_id, 2
+            while action_id in used_ids:
+                action_id = f"{base_id}_{suffix}"
+                suffix += 1
+            used_ids.add(action_id)
+            description = str(operation.get("summary") or operation.get("description") or f"{method} {path}")[:300]
+            actions.append({"id": action_id, "method": method, "path": path, "description": description})
+            if len(actions) >= 30:
+                break
+        if len(actions) >= 30:
+            break
+    if not actions:
+        raise HTTPException(400, "No supported API operations found. This importer supports GET/POST/PUT/PATCH/DELETE paths without path parameters.")
+    info = spec.get("info") if isinstance(spec.get("info"), dict) else {}
+    return {
+        "name": str(info.get("title") or parsed_spec.hostname or "API Plugin")[:80],
+        "description": str(info.get("description") or "Imported from an OpenAPI specification")[:500],
+        "base_url": base_url,
+        "actions": actions,
+    }
 
 
 @router.post("", status_code=201)
