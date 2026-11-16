@@ -11,15 +11,33 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 import hmac
+import time
+from fastapi import Cookie
 
 
-def require_auth(x_app_password: str | None = Header(default=None)):
+def require_auth(
+    x_app_password: str | None = Header(default=None),
+    dashboard_session: str | None = Cookie(default=None, alias="dashboard_session"),
+):
     expected = os.getenv("APP_PASSWORD", "")
     if not expected:
         raise HTTPException(503, "Dashboard password is not configured.")
-    if not x_app_password or not hmac.compare_digest(x_app_password, expected):
-        raise HTTPException(401, "Incorrect or missing dashboard password.")
-    return True
+    if x_app_password and hmac.compare_digest(x_app_password, expected):
+        return True
+    # Keep custom-plugin routes consistent with the main dashboard's signed session.
+    if dashboard_session and "." in dashboard_session:
+        try:
+            expiry_text, signature = dashboard_session.split(".", 1)
+            expiry = int(expiry_text)
+            now = int(time.time())
+            if now < expiry <= now + 30 * 24 * 60 * 60 + 60:
+                payload = f"dashboard-session:{expiry}".encode()
+                expected_signature = hmac.new(expected.encode(), payload, "sha256").hexdigest()
+                if hmac.compare_digest(signature, expected_signature):
+                    return True
+        except (TypeError, ValueError):
+            pass
+    raise HTTPException(401, "Incorrect or missing dashboard password.")
 
 
 from .storage import connect, _sql
