@@ -38,7 +38,7 @@ def parse_project_manifest(raw: str) -> dict:
         if not name or len(name) > 180 or "\\" in name:
             raise ValueError("A project file path is invalid.")
         path = PurePosixPath(name)
-        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
             raise ValueError("Project file paths must stay inside the project workspace.")
         if any(part.lower() in BLOCKED_NAMES or part.lower().startswith(".env.") for part in path.parts):
             raise ValueError("Credential and environment files cannot be included in project bundles.")
