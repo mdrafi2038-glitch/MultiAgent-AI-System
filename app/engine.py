@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from .agents import AGENTS, choose_agents
 from .supervisor import build_supervisor_plan, validate_plan, render_deploy_requested
-from .supervisor_runtime import inspect_render_service, deploy_render_service
+from .supervisor_runtime import inspect_render_service, deploy_render_service, inspect_github_repository
 from .storage import add_message, finish_task, pause_task_for_input, set_active_agent, set_active_agents, save_task_artifact, task_messages
 from .artifacts import create_project_zip
 
@@ -345,6 +345,26 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
         supervisor_plan = build_supervisor_plan(goal, specialist_keys)
         if not validate_plan(supervisor_plan):
             raise RuntimeError("Supervisor generated an invalid task dependency graph.")
+
+        # Execute read-only GitHub inspection when a repository and credential are available.
+        if "github" in supervisor_plan.get("integrations", []):
+            github_result = await inspect_github_repository(goal)
+            github_step = next((step for step in supervisor_plan["steps"] if step["id"] == "github_inspect"), None)
+            if github_step:
+                github_step["execution_state"] = github_result.get("state", "blocked")
+            add_message(task_id, "github_agent",
+                "SUPERVISOR_STEP_RESULT:github_inspect:" + json.dumps(github_result, ensure_ascii=False))
+            if github_result.get("state") == "completed":
+                tool_context += "\\n\\nLIVE GITHUB INSPECTION (verified from GitHub API):\\n" + json.dumps(github_result, ensure_ascii=False)
+                supervisor_plan["execution_mode"] = "adapter_execution"
+            else:
+                tool_context += "\\n\\nGITHUB INSPECTION BLOCKED: " + str(github_result.get("reason", "GitHub adapter unavailable."))
+
+            if any(step["id"] == "code_work" for step in supervisor_plan["steps"]):
+                for step in supervisor_plan["steps"]:
+                    if step["id"] in {"code_work", "quality_checks", "pull_request", "merge"}:
+                        step["execution_state"] = "blocked"
+                tool_context += "\\nGitHub repository writes, pull-request creation and merge are not yet implemented as executable adapters. No repository files were changed."
 
         # Execute the real, read-only Render preflight when its adapter is configured.
         # A deployment is a separate side effect and pauses until the user explicitly approves it.
