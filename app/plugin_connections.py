@@ -59,8 +59,12 @@ def save_credential(plugin_id: str, token: str | None, auth_type: str = "bearer"
 def mark_disconnected(plugin_id: str):
     now = datetime.now(timezone.utc).isoformat()
     with connect() as db:
-        db.execute(_sql("UPDATE plugin_connections SET credential_encrypted=%s,status=%s,updated_at=%s WHERE plugin_id=%s"),
-                   (None, "disconnected", now, plugin_id))
+        db.execute(_sql("""
+            INSERT INTO plugin_connections(plugin_id,credential_encrypted,auth_type,status,updated_at)
+            VALUES(%s,%s,%s,%s,%s)
+            ON CONFLICT(plugin_id) DO UPDATE SET credential_encrypted=excluded.credential_encrypted,
+            status=excluded.status,updated_at=excluded.updated_at
+        """), (plugin_id, None, "bearer", "disconnected", now))
         if plugin_id != "github":
             db.execute(_sql("UPDATE custom_plugins SET enabled=%s WHERE id=%s"), (False, plugin_id))
 
@@ -135,9 +139,11 @@ async def connect_plugin(plugin_id: str, body: ConnectRequest, _: bool = Depends
                     headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
                              "X-GitHub-Api-Version": "2022-11-28"})
             if response.status_code != 200:
+                mark_disconnected(plugin_id)
                 raise HTTPException(401, "GitHub did not accept this token. Check it and reconnect.")
             profile = response.json()
         except httpx.HTTPError as exc:
+            mark_disconnected(plugin_id)
             raise HTTPException(502, "Could not verify GitHub connection: " + type(exc).__name__) from exc
         save_credential(plugin_id, token, body.auth_type)
         return {"connected": True, "plugin_id": plugin_id, "account": profile.get("login"),
