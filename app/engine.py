@@ -12,7 +12,8 @@ from dotenv import load_dotenv
 load_dotenv()
 from .agents import AGENTS, choose_agents
 from .supervisor import build_supervisor_plan, validate_plan
-from .storage import add_message, finish_task, pause_task_for_input, set_active_agent, set_active_agents
+from .storage import add_message, finish_task, pause_task_for_input, set_active_agent, set_active_agents, save_task_artifact
+from .artifacts import create_project_zip
 
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY", "")
@@ -463,6 +464,49 @@ async def run_task(task_id: int, goal: str, skip_clarification: bool = False) ->
         )
         add_message(task_id, "reviewer", final)
         add_message(task_id, "system", "AGENT_COMPLETED:reviewer")
+
+        # Generate real downloadable source bundles for app and website requests.
+        software_request = bool(re.search(
+            r"\b(app|application|website|web app|software|android|apk|mobile app|frontend|backend)\b|অ্যাপ|ওয়েবসাইট|সফটওয়্যার|মোবাইল অ্যাপ|ওয়েব অ্যাপ",
+            goal, re.IGNORECASE,
+        ))
+        if software_request:
+            report_progress(task_id, "Project Builder is generating actual source files", "project_builder")
+            try:
+                manifest_raw = await ask_model_with_recovery(
+                    task_id, "project_builder", "Project source generation",
+                    "You are a senior software engineer generating a complete, coherent starter project. "
+                    "Return ONLY valid JSON: {\"name\":\"project name\",\"files\":[{\"path\":\"relative/path\",\"content\":\"complete file content\"}]}. "
+                    "Create real, runnable source files for the requested platform, not a plan or pseudocode. "
+                    "Include essential configuration, entry points, and a README with exact run/build steps. "
+                    "Keep the project concise and within 30 files and 500 KB total source. "
+                    "Never include credentials, API keys, .env files, private data, or generated binaries. "
+                    "Do not claim that an APK was compiled, tests were run, or a website was deployed. "
+                    "For Android, provide the Gradle/Kotlin project source; for a website, provide runnable source files.",
+                    f"Original approved user requirements:\n{goal}\n\nSupervisor plan:\n"
+                    f"{json.dumps(supervisor_plan, ensure_ascii=False)}\n\nSpecialist work:\n{team_context}\n\n"
+                    f"QA review:\n{final}\n\nCreate the actual project source files now.",
+                )
+                archive_bytes, bundle_info = create_project_zip(manifest_raw)
+                artifact_id = save_task_artifact(task_id, f"project-task-{task_id}.zip", "application/zip", archive_bytes)
+                final += (
+                    f"\n\nPROJECT FILES CREATED: {bundle_info['name']} · {bundle_info['files']} source files · "
+                    f"{len(archive_bytes)} ZIP bytes. Download artifact ID: {artifact_id}. "
+                    "This is source code, not a compiled APK."
+                )
+                add_message(task_id, "project_builder",
+                    f"PROJECT_ARTIFACT_CREATED:{artifact_id}:{bundle_info['files']}:{bundle_info['name']}")
+                add_message(task_id, "system", "AGENT_COMPLETED:project_builder")
+            except Exception as artifact_exc:
+                artifact_note = (
+                    "\n\nPROJECT FILE GENERATION FAILED: "
+                    f"{type(artifact_exc).__name__}: {str(artifact_exc)[:500]}. "
+                    "The QA result is available, but no downloadable source ZIP was created."
+                )
+                final += artifact_note
+                add_message(task_id, "project_builder", artifact_note)
+                add_message(task_id, "system", "AGENT_FAILED:project_builder")
+
         finish_task(task_id, "completed", final)
         return {
             "task_id": task_id,
